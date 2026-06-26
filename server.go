@@ -375,20 +375,50 @@ func (s *managedServer) status() string {
 
 	switch s.state {
 	case stateReady:
-		if len(s.tools) > 0 {
-			return fmt.Sprintf("%s (%d tools)", s.name, len(s.tools))
-		}
-		return s.name
+		return compactToolStatus(s.name, len(s.tools))
 	case stateError:
 		if s.startErr != nil {
-			return fmt.Sprintf("%s (%s)", s.name, s.startErr)
+			return fmt.Sprintf("%s (%s)", s.name, compactErr(s.startErr.Error()))
 		}
 		return fmt.Sprintf("%s (error)", s.name)
 	case stateStopped:
-		return fmt.Sprintf("%s (stopped)", s.name)
+		if len(s.tools) > 0 {
+			return fmt.Sprintf("%s (sleeping, %s)", s.name, toolCountText(len(s.tools)))
+		}
+		return fmt.Sprintf("%s (sleeping)", s.name)
 	case stateStarting:
 		return fmt.Sprintf("%s (starting)", s.name)
 	default:
 		return fmt.Sprintf("%s (%s)", s.name, s.state)
 	}
+}
+
+func compactToolStatus(name string, n int) string {
+	if n <= 0 {
+		return name
+	}
+	return fmt.Sprintf("%s (%s)", name, toolCountText(n))
+}
+
+func toolCountText(n int) string {
+	if n == 1 {
+		return "1 tool"
+	}
+	return fmt.Sprintf("%d tools", n)
+}
+
+func compactErr(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "error"
+	}
+	// Keep the one-line status compact; full errors remain in extension logs.
+	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
+		s = s[:i]
+	}
+	const max = 80
+	if len(s) > max {
+		s = s[:max-1] + "…"
+	}
+	return s
 }

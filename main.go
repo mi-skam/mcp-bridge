@@ -93,9 +93,9 @@ func main() {
 			srv.mu.Unlock()
 		}
 		if toolCount > 0 {
-			e.Notify("success", formatStatusSummary(b))
+			e.Notify(b.notifyLevel(), formatStatusSummary(b))
 		} else {
-			e.Notify("warn", "mcp-bridge: no tools discovered (check logs)")
+			e.Notify("warn", formatStatusSummary(b))
 		}
 	}()
 

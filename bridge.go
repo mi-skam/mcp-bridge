@@ -309,6 +309,32 @@ func (b *bridge) serverStatus() []string {
 	return lines
 }
 
+func (b *bridge) notifyLevel() string {
+	if len(b.servers) == 0 {
+		return "info"
+	}
+	ready := 0
+	errored := 0
+	for _, srv := range b.servers {
+		srv.mu.Lock()
+		state := srv.state
+		srv.mu.Unlock()
+		switch state {
+		case stateReady:
+			ready++
+		case stateError:
+			errored++
+		}
+	}
+	if errored > 0 && ready == 0 {
+		return "error"
+	}
+	if errored > 0 {
+		return "warn"
+	}
+	return "success"
+}
+
 // startServer manually starts a specific server.
 func (b *bridge) startServer(name string) error {
 	srv, ok := b.servers[name]
