@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -136,7 +137,7 @@ func (b *bridge) registerTool(serverName string, tool mcp.Tool) {
 	if tool.Annotations.Title != "" {
 		desc = tool.Annotations.Title + ": " + desc
 	}
-	
+
 	// Add annotation hints to description
 	var hints []string
 	if tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint {
@@ -154,7 +155,7 @@ func (b *bridge) registerTool(serverName string, tool mcp.Tool) {
 	if len(hints) > 0 {
 		desc += " [" + strings.Join(hints, ", ") + "]"
 	}
-	
+
 	if desc == "" {
 		desc = fmt.Sprintf("MCP tool from server %q", serverName)
 	}
@@ -293,11 +294,17 @@ func (b *bridge) stopAll() {
 	}
 }
 
-// serverStatus returns status info for all servers.
+// serverStatus returns compact status info for all servers in stable order.
 func (b *bridge) serverStatus() []string {
-	var lines []string
-	for _, srv := range b.servers {
-		lines = append(lines, srv.status())
+	names := make([]string, 0, len(b.servers))
+	for name := range b.servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, b.servers[name].status())
 	}
 	return lines
 }

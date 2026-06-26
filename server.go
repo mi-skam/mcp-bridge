@@ -55,22 +55,22 @@ type managedServer struct {
 	config ServerConfig
 	logger *log.Logger
 
-	mu        sync.Mutex
-	state     serverState
-	client    *client.Client
-	tools     []mcp.Tool
-	lastUsed  time.Time
-	startErr  error
-	stopCh    chan struct{} // closed when server should shut down
+	mu       sync.Mutex
+	state    serverState
+	client   *client.Client
+	tools    []mcp.Tool
+	lastUsed time.Time
+	startErr error
+	stopCh   chan struct{} // closed when server should shut down
 }
 
 // newManagedServer creates a new server wrapper.
 func newManagedServer(name string, cfg ServerConfig, logger *log.Logger) *managedServer {
 	return &managedServer{
-		name:    name,
-		config:  cfg,
-		logger:  logger,
-		state:   stateStopped,
+		name:     name,
+		config:   cfg,
+		logger:   logger,
+		state:    stateStopped,
 		lastUsed: time.Now(),
 	}
 }
@@ -368,9 +368,27 @@ func (s *managedServer) isIdle(timeout time.Duration) bool {
 	return time.Since(s.lastUsed) > timeout
 }
 
-// status returns a human-readable status string.
+// status returns a compact human-readable status string.
 func (s *managedServer) status() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return fmt.Sprintf("%s: %s (%d tools)", s.name, s.state, len(s.tools))
+
+	switch s.state {
+	case stateReady:
+		if len(s.tools) > 0 {
+			return fmt.Sprintf("%s (%d tools)", s.name, len(s.tools))
+		}
+		return s.name
+	case stateError:
+		if s.startErr != nil {
+			return fmt.Sprintf("%s (%s)", s.name, s.startErr)
+		}
+		return fmt.Sprintf("%s (error)", s.name)
+	case stateStopped:
+		return fmt.Sprintf("%s (stopped)", s.name)
+	case stateStarting:
+		return fmt.Sprintf("%s (starting)", s.name)
+	default:
+		return fmt.Sprintf("%s (%s)", s.name, s.state)
+	}
 }

@@ -196,7 +196,7 @@ func registerCommands(e *ext.Extension, b *bridge, logger *log.Logger) {
 func formatStatusSummary(b *bridge) string {
 	lines := b.serverStatus()
 	if len(lines) == 0 {
-		return "mcp-bridge: no servers"
+		return "no MCP servers"
 	}
-	return "mcp-bridge: " + strings.Join(lines, " | ")
+	return strings.Join(lines, " | ")
 }
