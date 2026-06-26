@@ -69,8 +69,8 @@
 - [ ] **Default configs** - Provide example configs for common servers
 
 ### User Experience
-- [ ] **Interactive setup** - `/mcp:setup` wizard for adding servers
-- [ ] **Server templates** - Pre-configured templates for popular servers
+- [x] **Interactive setup** - `/mcp:setup` / `/mcp setup` helper for adding servers
+- [x] **Server templates** - Pre-configured templates for popular servers
 - [ ] **Configurable timeouts** - Per-server timeout settings
 - [ ] **Verbose logging** - Debug mode with detailed protocol logs
 - [ ] **Performance metrics** - Track tool call latency and success rates
@@ -163,8 +163,8 @@
 4. ~~Better error messages~~ ✅
 
 ### Phase 2: User Experience (Medium Priority)
-1. Interactive setup wizard
-2. Server templates
+1. ~~Interactive setup wizard~~ ✅ (`/mcp setup add ...`)
+2. ~~Server templates~~ ✅ (grep, filesystem, context7, playwright)
 3. Config hot reload
 4. Example configs for popular servers
 

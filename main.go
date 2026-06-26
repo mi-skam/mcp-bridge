@@ -15,10 +15,11 @@
 // Tool naming: mcp__<server>__<tool>
 //
 // Slash commands:
-//   /mcp              — show status of all configured servers
-//   /mcp:start <name> — manually start a server
-//   /mcp:stop <name>  — manually stop a server
-//   /mcp:restart      — restart all servers
+//
+//	/mcp              — show status of all configured servers
+//	/mcp:start <name> — manually start a server
+//	/mcp:stop <name>  — manually stop a server
+//	/mcp:restart      — restart all servers
 //
 // Build:
 //
@@ -123,6 +124,13 @@ func registerCommands(e *ext.Extension, b *bridge, logger *log.Logger) {
 		}
 
 		switch parts[0] {
+		case "setup":
+			out, err := handleSetup(parts[1:], e.Host().CWD)
+			if err != nil {
+				return ext.Errorf("%v", err)
+			}
+			return ext.Display(out)
+
 		case "start":
 			if len(parts) < 2 {
 				return ext.Errorf("usage: /mcp:start <server-name>")
@@ -173,6 +181,14 @@ func registerCommands(e *ext.Extension, b *bridge, logger *log.Logger) {
 			}
 			return ext.Display(srv.status())
 		}
+	})
+
+	e.Command("mcp:setup", "add MCP server templates to zot MCP config", func(args string) ext.Response {
+		out, err := handleSetup(strings.Fields(strings.TrimSpace(args)), e.Host().CWD)
+		if err != nil {
+			return ext.Errorf("%v", err)
+		}
+		return ext.Display(out)
 	})
 }
 

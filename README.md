@@ -184,6 +184,9 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
 | `/mcp:start <name>` | Manually start a server |
 | `/mcp:stop <name>` | Manually stop a server |
 | `/mcp:restart` | Restart all servers |
+| `/mcp setup templates` | Show available setup templates |
+| `/mcp setup add <template> [--global|--project] [--name <server-name>]` | Add a server from a template |
+| `/mcp:setup ...` | Alias for `/mcp setup ...` |
 
 ## Tool Naming
 
@@ -238,7 +241,7 @@ zot ext logs mcp-bridge -f
 
 - **No OAuth flow** — authentication requires manual token configuration in headers
 - **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
-- **No config hot reload** — restart zot after config changes
+- **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
 ## Development
 
