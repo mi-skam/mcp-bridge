@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -25,7 +26,7 @@ func TestManagedServerStatusCompact(t *testing.T) {
 
 	s.state = stateError
 	s.startErr = errors.New("authorization required")
-	if got, want := s.status(), "grep (authorization required)"; got != want {
+	if got, want := s.status(), "grep (auth failed)"; got != want {
 		t.Fatalf("error status = %q, want %q", got, want)
 	}
 }
@@ -47,6 +48,49 @@ func TestFormatStatusSummaryCompact(t *testing.T) {
 	}
 }
 
+func TestManagedServerStopBeforeStartDoesNotPanic(t *testing.T) {
+	s := newManagedServer("never-started", ServerConfig{}, log.New(io.Discard, "", 0))
+	s.stop()
+	if got, want := s.state, stateStopped; got != want {
+		t.Fatalf("state = %s, want %s", got, want)
+	}
+}
+
+func TestMCPToolSchemaPreservesExtraFields(t *testing.T) {
+	schema := mcpToolSchema(mcp.Tool{
+		Name: "query",
+		InputSchema: mcp.ToolInputSchema{
+			Type:                 "object",
+			Properties:           map[string]any{"sql": map[string]any{"type": "string"}},
+			Required:             []string{"sql"},
+			Defs:                 map[string]any{"Thing": map[string]any{"type": "object"}},
+			AdditionalProperties: false,
+		},
+	})
+
+	data, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	if _, ok := got["$defs"]; !ok {
+		t.Fatalf("schema did not preserve $defs: %#v", got)
+	}
+	if got["additionalProperties"] != false {
+		t.Fatalf("schema did not preserve additionalProperties=false: %#v", got)
+	}
+}
+
+func TestCompactErrShortensConnectionFailures(t *testing.T) {
+	msg := "initialize: transport error: failed to send request: failed to send request"
+	if got, want := compactErr(msg), "connection failed"; got != want {
+		t.Fatalf("compactErr = %q, want %q", got, want)
+	}
+}
+
 func TestNotifyLevelWarnOnPartialFailure(t *testing.T) {
 	b := &bridge{servers: map[string]*managedServer{}}
 	b.servers["grep"] = newManagedServer("grep", ServerConfig{}, log.New(io.Discard, "", 0))
@@ -56,7 +100,7 @@ func TestNotifyLevelWarnOnPartialFailure(t *testing.T) {
 	b.servers["broken"].state = stateError
 	b.servers["broken"].startErr = errors.New("authorization required\nmore detail")
 
-	if got, want := formatStatusSummary(b), "broken (authorization required) | grep (1 tool)"; got != want {
+	if got, want := formatStatusSummary(b), "broken (auth failed) | grep (1 tool)"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 	if got, want := b.notifyLevel(), "warn"; got != want {

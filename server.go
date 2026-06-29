@@ -61,7 +61,6 @@ type managedServer struct {
 	tools    []mcp.Tool
 	lastUsed time.Time
 	startErr error
-	stopCh   chan struct{} // closed when server should shut down
 }
 
 // newManagedServer creates a new server wrapper.
@@ -91,7 +90,6 @@ func (s *managedServer) start(ctx context.Context) error {
 	}
 	s.state = stateStarting
 	s.startErr = nil
-	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
 
 	err := s.doStart(ctx)
@@ -173,8 +171,8 @@ func (s *managedServer) startStdio() (*client.Client, error) {
 		return nil, fmt.Errorf("stdio transport requires 'command' field")
 	}
 
-	// Build environment: inherit current env + extra vars
-	env := make([]string, 0)
+	// mcp-go merges this slice with os.Environ() before spawning the subprocess.
+	env := make([]string, 0, len(s.config.Env))
 	for k, v := range s.config.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
@@ -279,11 +277,6 @@ func (s *managedServer) stop() {
 	}
 	if s.state != stateError {
 		s.state = stateStopped
-	}
-	select {
-	case <-s.stopCh:
-	default:
-		close(s.stopCh)
 	}
 }
 
@@ -416,7 +409,22 @@ func compactErr(s string) string {
 	if i := strings.IndexAny(s, "\n\r"); i >= 0 {
 		s = s[:i]
 	}
-	const max = 80
+	lower := strings.ToLower(s)
+	switch {
+	case strings.Contains(lower, "authorization") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "401") || strings.Contains(lower, "403"):
+		return "auth failed"
+	case strings.Contains(lower, "transport") || strings.Contains(lower, "connection") || strings.Contains(lower, "connect"):
+		return "connection failed"
+	case strings.Contains(lower, "context deadline exceeded") || strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out"):
+		return "timeout"
+	case strings.Contains(lower, "no such file") || strings.Contains(lower, "executable file not found"):
+		return "command not found"
+	case strings.HasPrefix(lower, "initialize:"):
+		return "initialize failed"
+	case strings.HasPrefix(lower, "list tools:"):
+		return "tool discovery failed"
+	}
+	const max = 44
 	if len(s) > max {
 		s = s[:max-1] + "…"
 	}

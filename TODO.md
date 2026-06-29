@@ -3,12 +3,12 @@
 ## Transport Layer
 
 ### HTTP Transports
-- [ ] **Streamable HTTP** - Support `transport: "streamable-http"` with `url` field
+- [x] **Streamable HTTP** - Support `transport: "streamable-http"` with `url` field
   - Implement HTTP client with SSE streaming
   - Handle connection pooling and keep-alive
   - Support custom headers for authentication
   
-- [ ] **Server-Sent Events (SSE)** - Legacy HTTP transport support
+- [x] **Server-Sent Events (SSE)** - Legacy HTTP transport support
   - Implement SSE client for older MCP servers
   - Fallback mechanism when streamable-http unavailable
 
@@ -29,7 +29,7 @@
 ### API Keys & Secrets
 - [ ] **Environment variable interpolation** - Support `${VAR}` syntax in config
 - [ ] **Secret management** - Integration with system keychain
-- [ ] **Per-server auth headers** - Custom Authorization headers
+- [x] **Per-server auth headers** - Custom Authorization headers
 
 ## MCP Protocol Extensions
 
@@ -51,7 +51,7 @@
 - [ ] **Prompt history** - Track and reuse previous prompt invocations
 
 ### Tool Enhancements
-- [ ] **Tool annotations** - Respect MCP tool hints
+- [x] **Tool annotations** - Respect MCP tool hints
   - `readOnlyHint` - Mark tools as read-only for safety
   - `destructiveHint` - Add confirmation prompts for destructive operations
   - `idempotentHint` - Optimize retry logic for idempotent tools
@@ -71,12 +71,12 @@
 ### User Experience
 - [x] **Interactive setup** - `/mcp:setup` / `/mcp setup` helper for adding servers
 - [x] **Server templates** - Pre-configured templates for popular servers
-- [ ] **Configurable timeouts** - Per-server timeout settings
+- [x] **Configurable timeouts** - Per-server timeout settings
 - [ ] **Verbose logging** - Debug mode with detailed protocol logs
 - [ ] **Performance metrics** - Track tool call latency and success rates
 
 ### Error Handling
-- [ ] **Better error messages** - User-friendly error descriptions
+- [x] **Better error messages** - User-friendly error descriptions
 - [ ] **Error recovery** - Automatic retry for transient failures
 - [ ] **Fallback tools** - Provide stub tools when servers unavailable
 - [ ] **Error notifications** - Push notifications for critical failures

@@ -23,7 +23,7 @@ This extension reads MCP server configurations from standard locations (same for
 1. **Build the extension:**
 
    ```bash
-   cd examples/extensions/mcp-bridge
+   cd extensions/mcp-bridge
    go build -o mcp-bridge .
    ```
 
@@ -184,6 +184,8 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
 | `/mcp:start <name>` | Manually start a server |
 | `/mcp:stop <name>` | Manually stop a server |
 | `/mcp:restart` | Restart all servers |
+| `/mcp:start all` | Manually start all servers |
+| `/mcp:stop all` | Manually stop all servers |
 | `/mcp setup templates` | Show available setup templates |
 | `/mcp setup add <template> [--global|--project] [--name <server-name>]` | Add a server from a template |
 | `/mcp:setup ...` | Alias for `/mcp setup ...` |
@@ -247,11 +249,15 @@ zot ext logs mcp-bridge -f
 
 ```bash
 # Build
-cd examples/extensions/mcp-bridge
+cd extensions/mcp-bridge
 go build -o mcp-bridge .
 
+# Test
+go test ./...
+go vet ./...
+
 # Run without installing (for one zot session)
-zot --ext ./mcp-bridge
+zot --ext .
 
 # View logs
 zot ext logs mcp-bridge -f
@@ -263,27 +269,18 @@ MIT
 
 ## Testing
 
-### Tested Servers
-
-✅ **Filesystem Server** (stdio)
-```json
-{
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/private/tmp"]
-}
+```bash
+go test ./...
+go vet ./...
+go build -o /tmp/mcp-bridge .
 ```
 
-✅ **Grep.app** (streamable-http)
-```json
-{
-  "transport": "streamable-http",
-  "url": "https://mcp.grep.app/"
-}
-```
-**Note:** The root endpoint `/` is required. Streamable HTTP protocol headers are handled automatically by the bridge.
+Tested MCP servers:
 
-### Test Results
+| Server | Transport | Result |
+|---|---|---|
+| `@modelcontextprotocol/server-filesystem` | stdio | 14 tools registered; file operations and MCP errors handled correctly |
+| grep.app `https://mcp.grep.app/` | streamable-http | `searchGitHub` registered and successfully searched public GitHub code |
 
-- **Filesystem**: 14 tools registered, all working correctly
-- **Grep.app**: 1 tool registered (`searchGitHub`), successfully searched GitHub repositories and returned 309 code snippets
+Note: grep.app uses the root endpoint `/`. Streamable HTTP protocol headers are handled automatically by the bridge and should not be written to `mcp.json`.
 

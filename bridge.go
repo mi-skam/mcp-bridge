@@ -176,14 +176,24 @@ func (b *bridge) registerTool(serverName string, tool mcp.Tool) {
 	b.logger.Printf("registered tool: %s → %s/%s", zotName, serverName, tool.Name)
 }
 
-// mcpToolSchema converts an MCP Tool's InputSchema to a JSON Schema map.
-func mcpToolSchema(tool mcp.Tool) map[string]any {
+// mcpToolSchema converts an MCP Tool's input schema to a JSON Schema value.
+func mcpToolSchema(tool mcp.Tool) any {
+	if len(tool.RawInputSchema) > 0 {
+		return json.RawMessage(tool.RawInputSchema)
+	}
+
 	schema := map[string]any{
 		"type":       tool.InputSchema.Type,
 		"properties": tool.InputSchema.Properties,
 	}
 	if len(tool.InputSchema.Required) > 0 {
 		schema["required"] = tool.InputSchema.Required
+	}
+	if len(tool.InputSchema.Defs) > 0 {
+		schema["$defs"] = tool.InputSchema.Defs
+	}
+	if tool.InputSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = tool.InputSchema.AdditionalProperties
 	}
 	return schema
 }
@@ -225,7 +235,7 @@ func (b *bridge) handleToolCall(zotName string, args json.RawMessage) ext.ToolRe
 		if strings.Contains(errMsg, "connection") || strings.Contains(errMsg, "transport") {
 			return ext.TextErrorResult(fmt.Sprintf(
 				"Connection to MCP server '%s' failed: %v. The server may have crashed or been stopped. "+
-					"Try running '/mcp:restart %s' to restart the server.",
+					"Try running '/mcp:start %s' to restart that server, or '/mcp:restart' to restart all servers.",
 				mapping.serverName, err, mapping.serverName))
 		}
 		return ext.TextErrorResult(fmt.Sprintf(
@@ -267,6 +277,35 @@ func mcpResultToZot(result *mcp.CallToolResult) ext.ToolResult {
 		tr.IsError = true
 	}
 	return tr
+}
+
+// startAll starts all configured servers without re-registering their tools with zot.
+func (b *bridge) startAll(ctx context.Context) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(b.servers))
+
+	for name, srv := range b.servers {
+		wg.Add(1)
+		go func(n string, s *managedServer) {
+			defer wg.Done()
+			if err := s.start(ctx); err != nil {
+				b.logger.Printf("[%s] failed to start: %v", n, err)
+				errCh <- fmt.Errorf("%s: %w", n, err)
+			}
+		}(name, srv)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	var errs []string
+	for err := range errCh {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // startIdleReaper runs a background goroutine that kills idle servers.
