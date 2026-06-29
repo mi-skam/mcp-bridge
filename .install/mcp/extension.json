@@ -1,8 +1,0 @@
-{
-  "name": "mcp",
-  "version": "1.0.0",
-  "exec": "./mcp-bridge",
-  "language": "go",
-  "description": "Connect zot to MCP servers - tools are registered automatically",
-  "enabled": true
-}
