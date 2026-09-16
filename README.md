@@ -39,12 +39,15 @@ Expansion uses the bridge process environment after global/project configuration
 
 ## Quick Start
 
-1. **Build the extension:**
+Requires [Go 1.25+](https://go.dev/dl/) on `PATH`; the extension compiles itself on first start.
+
+1. **Install the extension:**
 
    ```bash
-   cd extensions/mcp-bridge
-   go build -o mcp-bridge .
+   zot ext install https://git.miskam.xyz/mxm/zot-mcp
    ```
+
+   From a checkout of the monorepo instead: `cd extensions/mcp-bridge && make`.
 
 2. **Create a project config file:**
 
@@ -66,13 +69,7 @@ Expansion uses the bridge process environment after global/project configuration
    EOF
    ```
 
-3. **Install the extension:**
-
-   ```bash
-   zot ext install .
-   ```
-
-4. **Restart zot.** On first run the extension refreshes its tool cache in the background. When zot shows `MCP tool cache changed`, run `/reload-ext` once. Future launches register the cached MCP tools immediately as deferred definitions.
+3. **Restart zot.** On first run the extension refreshes its tool cache in the background. When zot shows `MCP tool cache changed`, run `/reload-ext` once. Future launches register the cached MCP tools immediately as deferred definitions.
 
 The model initially sees one small loader tool, `mcp__search_tools`. It searches cached MCP tool names and descriptions locally, activates up to eight relevant definitions by default, and then calls the selected MCP tool normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
 
