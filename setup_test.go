@@ -58,6 +58,35 @@ func TestHandleSetupAddFilesystemProject(t *testing.T) {
 	}
 }
 
+func TestHandleSetupAddYouGlobal(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("ZOT_HOME", tmp)
+
+	out, err := handleSetup([]string{"add", "you"}, tmp)
+	if err != nil {
+		t.Fatalf("handleSetup add you: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected setup output")
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmp, "mcp.json"))
+	if err != nil {
+		t.Fatalf("read mcp.json: %v", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse mcp.json: %v", err)
+	}
+	you := cfg.MCPServers["you"]
+	if you.Transport != "streamable-http" || you.URL != "https://api.you.com/mcp?profile=free" {
+		t.Fatalf("unexpected you config: %+v", you)
+	}
+	if len(you.Headers) != 0 {
+		t.Fatalf("keyless template must not write auth headers: %+v", you.Headers)
+	}
+}
+
 func TestHandleSetupDuplicate(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("ZOT_HOME", tmp)

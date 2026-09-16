@@ -17,24 +17,25 @@
 // Slash commands:
 //
 //	/mcp              — show status of all configured servers
-//	/mcp:start <name> — manually start a server
-//	/mcp:stop <name>  — manually stop a server
-//	/mcp:restart      — restart all servers
-//	/mcp:start all    — manually start all servers
-//	/mcp:stop all     — manually stop all servers
+//	/mcp start <name> — manually start a server
+//	/mcp stop <name>  — manually stop a server
+//	/mcp restart      — restart all servers
+//	/mcp start all    — manually start all servers
+//	/mcp stop all     — manually stop all servers
 //
 // Build:
 //
-//	cd extensions/mcp-bridge
+//	cd examples/extensions/mcp-bridge
 //	go build -o mcp-bridge .
 //
 // Install:
 //
-//	zot ext install ./mcp-bridge
+//	zot ext install .
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -44,63 +45,53 @@ import (
 )
 
 func main() {
-	e := ext.New("mcp", "1.0.0")
+	e := ext.New("mcp", "1.1.0")
 
 	// Logger writes to stderr (captured by zot into ext logs)
 	logger := log.New(os.Stderr, "[mcp-bridge] ", log.LstdFlags)
 
-	// Load config
-	cwd, _ := os.Getwd()
-	cfg, err := loadConfig(cwd)
-	if err != nil {
-		logger.Printf("config error: %v", err)
-		e.Notify("error", "mcp: config error: "+err.Error())
-	}
-
-	if len(cfg.MCPServers) == 0 {
-		logger.Printf("no MCP servers configured")
-		// Still register commands so user can check status
-		registerCommands(e, nil)
-		e.Run()
-		return
-	}
-
-	logger.Printf("found %d MCP server(s)", len(cfg.MCPServers))
-
-	// Create bridge
-	b := newBridge(e, logger)
-	b.loadServers(cfg)
-
-	// Discover and register tools
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := b.discoverAndRegister(ctx); err != nil {
-		logger.Printf("discovery error: %v", err)
-	}
-
-	// Start idle reaper
-	b.startIdleReaper()
-
-	// Register slash commands
-	registerCommands(e, b)
-
-	// Notify user after extension is running
-	go func() {
-		time.Sleep(500 * time.Millisecond) // Wait for hello handshake
-		toolCount := 0
-		for _, srv := range b.servers {
-			srv.mu.Lock()
-			toolCount += len(srv.tools)
-			srv.mu.Unlock()
+	var b *bridge
+	e.OnHello(func(host ext.HostInfo) {
+		cwd := host.CWD
+		if cwd == "" {
+			var err error
+			cwd, err = os.Getwd()
+			if err != nil {
+				logger.Printf("getwd fallback: %v", err)
+			}
 		}
-		clearExtensionNotes()
-		level := b.notifyLevel()
-		if toolCount == 0 {
-			level = "warn"
+
+		cfg, err := loadConfig(cwd)
+		if err != nil {
+			logger.Printf("config error: %v", err)
+			notifyText(e, "error", "mcp: config error: "+err.Error())
 		}
-		e.Notify(level, formatStatusSummary(b))
-	}()
+
+		if len(cfg.MCPServers) == 0 {
+			logger.Printf("no MCP servers configured")
+			// Still register commands so user can check status and run setup.
+			registerCommands(e, nil)
+			return
+		}
+
+		logger.Printf("found %d MCP server(s)", len(cfg.MCPServers))
+
+		b = newBridge(e, cwd, logger)
+		b.loadServers(cfg)
+		b.registerToolSearch()
+
+		cachePath := toolCachePath()
+		cache, err := readToolCache(cachePath)
+		if err != nil {
+			logger.Printf("tool cache error: %v", err)
+		}
+		cachedToolCount := b.registerCachedTools(cache)
+		logger.Printf("registered %d cached MCP tool(s)", cachedToolCount)
+
+		b.startIdleReaper()
+		registerCommands(e, b)
+		startBackgroundToolRefresh(e, b, logger, cachePath, cachedToolCount)
+	})
 
 	// Run the extension protocol loop
 	if err := e.Run(); err != nil {
@@ -108,7 +99,37 @@ func main() {
 	}
 
 	// Cleanup
-	b.stopAll()
+	if b != nil {
+		b.stopAll()
+	}
+}
+
+func startBackgroundToolRefresh(e *ext.Extension, b *bridge, logger *log.Logger, cachePath string, cachedToolCount int) {
+	// Refresh discovery in the background so zot startup is not blocked. Only ask
+	// for /reload-ext if the discovered tool cache actually changed; otherwise a
+	// reload would just repeat this cycle without adding anything.
+	go func() {
+		time.Sleep(500 * time.Millisecond) // Let ready/registrations flush first.
+		if cachedToolCount == 0 {
+			notifyText(e, "warn", "MCP loaded without cached tools. Refreshing tool cache in background.")
+		} else {
+			notifyText(e, "success", fmt.Sprintf("MCP loaded %d cached tool(s). Refreshing cache in background.", cachedToolCount))
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		changed, err := b.refreshToolCache(ctx, cachePath)
+		if err != nil {
+			logger.Printf("tool cache refresh error: %v", err)
+			notifyText(e, "warn", "MCP tool cache refresh partially failed: "+err.Error())
+			return
+		}
+		if changed {
+			notifyText(e, "success", "MCP tool cache changed. Run /reload-ext once to load the updated tools.")
+			return
+		}
+		notifyBridgeStatus(e, b)
+	}()
 }
 
 // registerCommands sets up the /mcp slash commands.
@@ -119,20 +140,55 @@ func registerCommands(e *ext.Extension, b *bridge) {
 		// Parse subcommand
 		parts := strings.Fields(args)
 		if len(parts) == 0 {
-			// /mcp — show status
-			if b == nil {
-				return ext.Display("mcp: no servers configured")
-			}
-			return ext.Display(formatStatusSummary(b))
+			// /mcp lists actions; status is a separate, read-only command.
+			notifyText(e, "info", mcpHelp(b))
+			return ext.Noop()
 		}
 
 		switch parts[0] {
+		case "help", "--help", "-h":
+			notifyText(e, "info", mcpHelp(b))
+			return ext.Noop()
+
+		case "status":
+			if len(parts) > 2 { return ext.Errorf("usage: /mcp status [server]") }
+			if len(parts) == 1 {
+				notifyText(e, "info", mcpOverview(b))
+				return ext.Noop()
+			}
+			if b == nil { return ext.Errorf("no servers configured") }
+			srv, ok := b.servers[parts[1]]
+			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
+			notifyText(e, serverNotifyLevel(srv), srv.detailStatus())
+			return ext.Noop()
+
 		case "setup":
 			out, err := handleSetup(parts[1:], e.Host().CWD)
 			if err != nil {
 				return ext.Errorf("%v", err)
 			}
-			return ext.Display(out)
+			notifyText(e, "info", out)
+			return ext.Noop()
+
+		case "login", "logout":
+			if b == nil || len(parts) != 2 { return ext.Errorf("usage: /mcp %s <server>", parts[0]) }
+			srv, ok := b.servers[parts[1]]
+			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
+			if parts[0] == "logout" {
+				srv.stop()
+				if err := os.Remove(oauthStoreFor(srv.config.URL).path); err != nil && !os.IsNotExist(err) { return ext.Errorf("OAuth logout failed") }
+				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
+				return ext.Noop()
+			}
+			if err := srv.login(context.Background(), func(u string) {
+				notifyText(e, "info", "Opening your browser for MCP authorization. If it does not open, use:\n"+u)
+				if err := openAuthorizationURL(u); err != nil {
+					notifyText(e, "warning", "Could not open the browser. Open the authorization URL above manually.")
+				}
+			}); err != nil { return ext.Errorf("OAuth login: %v", err) }
+			srv.stop()
+			notifyText(e, "info", "OAuth credentials saved. Run /mcp refresh to reconnect and discover tools.")
+			return ext.Noop()
 
 		case "start":
 			return handleStartCommand(e, b, parts[1:])
@@ -142,6 +198,9 @@ func registerCommands(e *ext.Extension, b *bridge) {
 
 		case "restart":
 			return handleRestartCommand(e, b)
+
+		case "refresh", "discover":
+			return handleRefreshCommand(e, b, toolCachePath())
 
 		default:
 			// /mcp <name> — show detailed status for one server
@@ -153,37 +212,60 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			if !ok {
 				return ext.Errorf("unknown server: %s", name)
 			}
-			return ext.Display(srv.status())
+			notifyText(e, serverNotifyLevel(srv), srv.detailStatus())
+			return ext.Noop()
 		}
 	})
 
-	e.Command("mcp:start", "start one MCP server, or all MCP servers with 'all'", func(args string) ext.Response {
-		return handleStartCommand(e, b, strings.Fields(strings.TrimSpace(args)))
-	})
+}
 
-	e.Command("mcp:stop", "stop one MCP server, or all MCP servers with 'all'", func(args string) ext.Response {
-		return handleStopCommand(e, b, strings.Fields(strings.TrimSpace(args)))
-	})
-
-	e.Command("mcp:restart", "restart all MCP servers", func(args string) ext.Response {
-		if strings.TrimSpace(args) != "" {
-			return ext.Errorf("usage: /mcp:restart")
+func mcpOverview(b *bridge) string {
+	var sb strings.Builder
+	sb.WriteString("MCP status (last known; not a live health check)\n")
+	if b == nil || len(b.servers) == 0 {
+		sb.WriteString("  no servers configured\n")
+	} else {
+		for _, line := range b.serverStatus() {
+			sb.WriteString("  ")
+			sb.WriteString(line)
+			sb.WriteByte('\n')
 		}
-		return handleRestartCommand(e, b)
-	})
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 
-	e.Command("mcp:setup", "add MCP server templates to zot MCP config", func(args string) ext.Response {
-		out, err := handleSetup(strings.Fields(strings.TrimSpace(args)), e.Host().CWD)
-		if err != nil {
-			return ext.Errorf("%v", err)
-		}
-		return ext.Display(out)
-	})
+func mcpCommands() string {
+	var sb strings.Builder
+	sb.WriteString("MCP COMMANDS\n\nInspect\n")
+	sb.WriteString("  /mcp status                          All server states\n")
+	sb.WriteString("  /mcp status <server>                 Details and recent lifecycle log\n")
+	sb.WriteString("\nManage connections\n")
+	sb.WriteString("  /mcp start <server|all>               Start one server, or all servers\n")
+	sb.WriteString("  /mcp stop <server|all>                Stop one server, or all servers\n")
+	sb.WriteString("  /mcp restart                          Restart all servers\n")
+	sb.WriteString("  /mcp login <server>                   Authorize in your browser (OAuth + PKCE)\n")
+	sb.WriteString("  /mcp logout <server>                  Remove local OAuth credentials\n")
+	sb.WriteString("  /mcp refresh                          Refresh cached tool definitions\n")
+	sb.WriteString("  /mcp help                             Show all MCP commands\n")
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func mcpHelp(b *bridge) string {
+	var sb strings.Builder
+	sb.WriteString(mcpCommands())
+	sb.WriteString("\n\nSetup commands\n")
+	sb.WriteString("  /mcp setup templates                  List setup templates\n")
+	sb.WriteString("  /mcp setup add <template> [options]   Add a server template\n")
+	sb.WriteString("\nSetup options\n")
+	sb.WriteString("  --global                              Write to $ZOT_HOME/mcp.json (default)\n")
+	sb.WriteString("  --project                             Write to .zot/mcp.json\n")
+	sb.WriteString("  --name <server-name>                  Use a custom configured server name\n")
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func handleStartCommand(e *ext.Extension, b *bridge, args []string) ext.Response {
 	if len(args) != 1 {
-		return ext.Errorf("usage: /mcp:start <server-name|all>")
+		return ext.Errorf("usage: /mcp start <server-name|all>")
 	}
 	if b == nil {
 		return ext.Errorf("no servers configured")
@@ -207,7 +289,7 @@ func handleStartCommand(e *ext.Extension, b *bridge, args []string) ext.Response
 
 func handleStopCommand(e *ext.Extension, b *bridge, args []string) ext.Response {
 	if len(args) != 1 {
-		return ext.Errorf("usage: /mcp:stop <server-name|all>")
+		return ext.Errorf("usage: /mcp stop <server-name|all>")
 	}
 	if b == nil {
 		return ext.Errorf("no servers configured")
@@ -239,12 +321,58 @@ func handleRestartCommand(e *ext.Extension, b *bridge) ext.Response {
 	return ext.Noop()
 }
 
+func handleRefreshCommand(e *ext.Extension, b *bridge, cachePath string) ext.Response {
+	if b == nil {
+		return ext.Errorf("no servers configured")
+	}
+	notifyText(e, "info", "Refreshing MCP tool cache…")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		changed, err := b.refreshToolCache(ctx, cachePath)
+		if err != nil {
+			notifyText(e, "warn", "MCP tool cache refresh partially failed: "+err.Error())
+			return
+		}
+		if changed {
+			notifyText(e, "success", "MCP tool cache changed. Run /reload-ext once to load the updated tools.")
+			return
+		}
+		notifyBridgeStatus(e, b)
+	}()
+	return ext.Noop()
+}
+
 func notifyBridgeStatus(e *ext.Extension, b *bridge) {
 	if e == nil || b == nil {
 		return
 	}
+	notifyText(e, b.notifyLevel(), formatStatusSummary(b))
+}
+
+func serverNotifyLevel(srv *managedServer) string {
+	if srv == nil {
+		return "info"
+	}
+	srv.mu.Lock()
+	state := srv.state
+	srv.mu.Unlock()
+	switch state {
+	case stateReady:
+		return "success"
+	case stateError:
+		return "error"
+	default:
+		return "info"
+	}
+}
+
+func notifyText(e *ext.Extension, level, text string) {
+	if e == nil {
+		return
+	}
 	clearExtensionNotes()
-	e.Notify(b.notifyLevel(), formatStatusSummary(b))
+	e.Notify(level, text)
 }
 
 func clearExtensionNotes() {
@@ -257,5 +385,5 @@ func formatStatusSummary(b *bridge) string {
 	if len(lines) == 0 {
 		return "no MCP servers"
 	}
-	return strings.Join(lines, " | ")
+	return "MCP status (last known; not a live health check)\n" + strings.Join(lines, "\n")
 }

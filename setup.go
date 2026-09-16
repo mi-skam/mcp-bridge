@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,9 +33,6 @@ func setupTemplates() map[string]serverTemplate {
 			Name:        "filesystem",
 			Description: "Read/write files under the current project directory using the official filesystem MCP server.",
 			Config: func(cwd string) ServerConfig {
-				if cwd == "" {
-					cwd, _ = os.Getwd()
-				}
 				return ServerConfig{
 					Transport: "stdio",
 					Command:   "npx",
@@ -60,6 +59,16 @@ func setupTemplates() map[string]serverTemplate {
 					Transport: "stdio",
 					Command:   "npx",
 					Args:      []string{"-y", "@executeautomation/playwright-mcp-server"},
+				}
+			},
+		},
+		"you": {
+			Name:        "you",
+			Description: "Current web search via the keyless You.com MCP server (you-search). Add an Authorization Bearer header with a YDC_API_KEY for additional authenticated tools.",
+			Config: func(cwd string) ServerConfig {
+				return ServerConfig{
+					Transport: "streamable-http",
+					URL:       "https://api.you.com/mcp?profile=free",
 				}
 			},
 		},
@@ -136,7 +145,7 @@ func handleSetup(args []string, cwd string) (string, error) {
 	path := filepath.Join(zotHome(), "mcp.json")
 	if target == "project" {
 		if cwd == "" {
-			cwd, _ = os.Getwd()
+			return "", fmt.Errorf("--project requires a working directory, but none is known")
 		}
 		path = filepath.Join(cwd, ".zot", "mcp.json")
 	}
@@ -164,7 +173,7 @@ func readConfigFile(path string) (Config, error) {
 	cfg := Config{MCPServers: map[string]ServerConfig{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return cfg, nil
 		}
 		return cfg, err
@@ -182,13 +191,11 @@ func readConfigFile(path string) (Config, error) {
 }
 
 func writeConfigFile(path string, cfg Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	// 0o600: mcp.json can contain auth headers / tokens.
+	return writeFileAtomic(path, data, 0o600)
 }

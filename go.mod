@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/mark3labs/mcp-go v0.55.1
-	github.com/patriceckhart/zot v0.2.47
+	github.com/patriceckhart/zot v0.3.76
 )
 
 require (

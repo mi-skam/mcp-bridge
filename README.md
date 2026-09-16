@@ -7,8 +7,9 @@ This extension reads MCP server configurations from standard locations (same for
 ## Features
 
 - **Standard config format** — same JSON as Claude Desktop, Cursor, Cline
-- **Smart lazy loading** — servers spawn on startup to discover tools, then auto-sleep after idle time
-- **Auto-respawn** — calling a tool on a sleeping server wakes it up automatically
+- **On-demand tool discovery** — only `mcp__search_tools` is advertised initially; matching MCP schemas load when needed instead of bloating every model request
+- **Smart lazy loading** — cached definitions register as deferred tools at startup, servers wake for refresh or tool calls, then auto-sleep after idle time
+- **Auto-respawn** — calling a loaded tool on a sleeping server wakes it up automatically
 - **Multi-transport** — stdio, streamable-http, and SSE transports
 - **Multi-server** — connect to any number of MCP servers simultaneously
 - **Tool namespacing** — tools appear as `mcp__<server>__<tool>` to avoid collisions
@@ -17,6 +18,24 @@ This extension reads MCP server configurations from standard locations (same for
 - **Custom headers** — auth tokens and other headers for HTTP servers
 - **Slash commands** — `/mcp` to check status, start/stop/restart servers
 - **Better error messages** — context-aware errors with actionable suggestions
+
+## Interactive OAuth (experimental)
+
+For an HTTP server requiring browser authorization, run `/mcp login <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
+
+After authorization, run `/mcp refresh`. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
+
+`/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization and refresh against a real provider still need end-to-end validation.
+
+## Environment variables
+
+Like [Claude Code](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json), the bridge expands `${VAR}` and `${VAR:-default}` in `command`, `args`, `env` values, `url`, and `headers` values. This is client configuration compatibility, not a requirement of the MCP protocol.
+
+```json
+{"mcpServers":{"api":{"transport":"streamable-http","url":"${API_BASE_URL:-https://api.example.com}/mcp","headers":{"Authorization":"Bearer ${API_KEY}"}}}}
+```
+
+Expansion uses the bridge process environment after global/project configurations are merged. Defaults apply to unset variables; an explicitly empty variable stays empty. Values are expanded once, without shell execution, bare `$VAR` expansion, nested defaults, or references to sibling `env` entries. Config files are not rewritten. A missing variable without a default disables that server and reports the server, field, and variable name, never the field value; other valid servers remain available.
 
 ## Quick Start
 
@@ -27,16 +46,16 @@ This extension reads MCP server configurations from standard locations (same for
    go build -o mcp-bridge .
    ```
 
-2. **Create a config file:**
+2. **Create a project config file:**
 
    ```bash
-   mkdir -p ~/.config/zot  # or ~/Library/Application\ Support/zot on macOS
-   cat > ~/.config/zot/mcp.json << 'EOF'
+   mkdir -p .zot
+   cat > .zot/mcp.json << 'EOF'
    {
      "mcpServers": {
        "filesystem": {
          "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+         "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
        },
        "context7": {
          "command": "npx",
@@ -50,10 +69,71 @@ This extension reads MCP server configurations from standard locations (same for
 3. **Install the extension:**
 
    ```bash
-   zot ext install ./mcp-bridge
+   zot ext install .
    ```
 
-4. **Restart zot** — your MCP tools are ready!
+4. **Restart zot.** On first run the extension refreshes its tool cache in the background. When zot shows `MCP tool cache changed`, run `/reload-ext` once. Future launches register the cached MCP tools immediately as deferred definitions.
+
+The model initially sees one small loader tool, `mcp__search_tools`. It searches cached MCP tool names and descriptions locally, activates up to eight relevant definitions by default, and then calls the selected MCP tool normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
+
+### Phone pairing with Build Remote Agent
+
+[Build Remote Agent](https://grokbuildremote.com/) is an optional, third-party integration that lets a paired phone observe terminal sessions and veto actions. It is an independent Linespotting AB product and is not affiliated with xAI or SpaceX.
+
+#### Install the agent
+
+Pin release `v0.6.0` and verify the binary against the checksum listed here. The release's own `SHA256SUMS` file does not currently match five of its six binary assets, so do not use that file as the trust source. These checksums were verified directly against the release assets on 2026-08-24:
+
+```text
+62673a6856342a87d4a2a659bc1de92200aa19a5b60d88d252254940820f0b7f  gbr-agent-darwin-amd64
+7baa1a8e214cd71b60e3f2b5063713e00ff740939749c3cab3d702784a1432f8  gbr-agent-darwin-arm64
+fb54724367882497f2e8e05e40ecdeb4be29e008e6c865fc5c426cf464e6ad6e  gbr-agent-linux-amd64
+9e9d7ca45bb0c4ded9d04226136013e9b64ae30f16bcf03069d35e9c38171cb9  gbr-agent-linux-arm64
+40355b2be6cd68f3be68f2a06dfd30307ec1a60f16f87f1d6174012b35aa4a49  gbr-agent-windows-amd64.exe
+8fb9efcbc7e2ac91c11964944bf0f45e31bb23f4356d9dcb4b305d7cb9b0fe8c  gbr-agent-windows-arm64.exe
+```
+
+This macOS Apple Silicon example downloads, verifies, and installs the binary. Change both `ASSET` and `SHA` for another platform.
+
+```bash
+VER=v0.6.0
+ASSET=gbr-agent-darwin-arm64
+SHA=7baa1a8e214cd71b60e3f2b5063713e00ff740939749c3cab3d702784a1432f8
+BASE="https://github.com/LinespottingOrg/GrokBuildRemote-Agents/releases/download/$VER"
+curl -fsSL -o "$ASSET" "$BASE/$ASSET"
+if command -v sha256sum >/dev/null 2>&1; then
+  printf '%s  %s\n' "$SHA" "$ASSET" | sha256sum -c -
+else
+  printf '%s  %s\n' "$SHA" "$ASSET" | shasum -a 256 -c -
+fi
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$ASSET" "$HOME/.local/bin/gbr-agent"
+export PATH="$HOME/.local/bin:$PATH"
+gbr-agent version  # must report v0.6.0
+gbr-agent pair
+gbr-agent run
+```
+
+Keep `gbr-agent run` running. Its Bot API should only be available over loopback:
+
+```bash
+curl -sS http://127.0.0.1:8788/health
+curl -sS http://127.0.0.1:8788/v1/sessions
+```
+
+#### Install the MCP server
+
+The MCP server requires Node.js 20 or newer. Pin its source instead of cloning the mutable default branch:
+
+```bash
+git clone --branch v0.6.0 --depth 1 https://github.com/LinespottingOrg/GrokBuildRemote-Agents.git
+cd GrokBuildRemote-Agents/mcp/gbr-mcp
+npm install --ignore-scripts
+MCP_PATH="$(pwd)/bin/gbr-mcp.js"
+node "$MCP_PATH" --diagnose
+```
+
+The `v0.6.0` source does not include a package lock, so its npm dependency resolution is not fully reproducible. Review the package manifest and resolved dependency tree before use. Put the absolute value of `MCP_PATH` in the configuration below. Never put mailbox keys in `mcp.json`.
 
 ## Configuration
 
@@ -61,7 +141,7 @@ Config files are loaded from two locations (project overrides global per-server)
 
 | Location | Scope |
 |---|---|
-| `$ZOT_HOME/mcp.json` | Global (macOS: `~/Library/Application Support/zot/mcp.json`) |
+| `$ZOT_HOME/mcp.json` | Global (`$XDG_STATE_HOME/zot/mcp.json` when `XDG_STATE_HOME` is set) |
 | `.zot/mcp.json` | Project-level (in your project root) |
 
 ### Config Format
@@ -81,6 +161,13 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
       "connectTimeout": 30,                // connection timeout (seconds)
       "requestTimeout": 60,                // per-request timeout (seconds)
       "idleTimeout": 300                   // idle timeout before stopping (seconds)
+    },
+
+    // Build Remote Agent (gbr/1). Pair with `gbr-agent pair`, then keep
+    // `gbr-agent run` running. Use an absolute path to the pinned MCP checkout.
+    "gbr": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/GrokBuildRemote-Agents/mcp/gbr-mcp/bin/gbr-mcp.js"]
     },
 
     // ── Streamable HTTP transport (modern HTTP) ─────────────────────────────
@@ -142,10 +229,40 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+
+    // You.com web search (streamable-http, keyless)
+    "you": {
+      "transport": "streamable-http",
+      "url": "https://api.you.com/mcp?profile=free"
     }
   }
 }
 ```
+
+### You.com template
+
+`/mcp setup add you` registers the keyless You.com MCP profile
+(`you-search`). It needs no account or API key. To use the authenticated
+server and its additional tools, edit `$ZOT_HOME/mcp.json` after adding
+the template:
+
+```jsonc
+{
+  "mcpServers": {
+    "you": {
+      "transport": "streamable-http",
+      "url": "https://api.you.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_YDC_API_KEY"
+      }
+    }
+  }
+}
+```
+
+The authenticated endpoint does not expose `you-finance` by default. Request
+it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 
 ## How It Works
 
@@ -168,27 +285,28 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-1. **Startup**: mcp-bridge reads config, spawns all MCP servers
-2. **Discovery**: calls `tools/list` on each server, registers tools with zot
-3. **Naming**: tools appear as `mcp__<server>__<tool>` (e.g., `mcp__filesystem__read_file`)
-4. **Idle timeout**: servers not used for 5 minutes are automatically stopped
-5. **Auto-respawn**: calling a tool on a stopped server wakes it up
-6. **Routing**: tool calls are forwarded to the appropriate MCP server
+1. **Startup**: mcp-bridge reads config and registers tools from `mcp-tools-cache.json`
+2. **Background refresh**: starts configured MCP servers, calls `tools/list`, and updates the cache when definitions change
+3. **Reload**: if the cache changed, run `/reload-ext` once so zot rebuilds the tool registry with the new definitions
+4. **Naming**: tools appear as `mcp__<server>__<tool>` (e.g., `mcp__filesystem__read_file`)
+5. **Idle timeout**: servers not used for 5 minutes are automatically stopped
+6. **Auto-respawn**: calling a tool on a stopped server wakes it up
+7. **Routing**: tool calls are forwarded to the appropriate MCP server
 
 ## Slash Commands
 
 | Command | Description |
 |---|---|
 | `/mcp` | Show status of all configured servers |
+| `/mcp help` | Show available MCP commands |
 | `/mcp <name>` | Show detailed status for one server |
-| `/mcp:start <name>` | Manually start a server |
-| `/mcp:stop <name>` | Manually stop a server |
-| `/mcp:restart` | Restart all servers |
-| `/mcp:start all` | Manually start all servers |
-| `/mcp:stop all` | Manually stop all servers |
+| `/mcp start <name>` | Manually start a server |
+| `/mcp stop <name>` | Manually stop a server |
+| `/mcp restart` | Restart all servers |
+| `/mcp start all` | Manually start all servers |
+| `/mcp stop all` | Manually stop all servers |
 | `/mcp setup templates` | Show available setup templates |
 | `/mcp setup add <template> [--global|--project] [--name <server-name>]` | Add a server from a template |
-| `/mcp:setup ...` | Alias for `/mcp setup ...` |
 
 ## Tool Naming
 
@@ -210,16 +328,17 @@ Server and tool names are sanitized (non-alphanumeric characters become `_`).
 
 The bridge uses a "smart lazy" strategy:
 
-1. **On startup**: all servers spawn, tools are discovered and registered
-2. **During use**: servers stay running for fast tool calls
-3. **After 5 min idle**: unused servers are automatically stopped (saves memory/CPU)
-4. **On next tool call**: the server is respawned automatically (~1-3s delay)
+1. **On startup**: cached tool definitions are registered without blocking zot startup
+2. **In the background**: servers start long enough to refresh the tool cache
+3. **During use**: servers stay running for fast tool calls
+4. **After 5 min idle**: unused servers are automatically stopped (saves memory/CPU)
+5. **On next tool call**: the server is respawned automatically (~1-3s delay)
 
 This gives you:
-- ✅ All tools visible to the LLM immediately
-- ✅ Fast tool calls when actively working
-- ✅ Memory freed when not using MCP tools
-- ✅ No manual server management needed
+- Cached tools visible to the LLM immediately
+- Fast tool calls when actively working
+- Memory freed when not using MCP tools
+- One manual `/reload-ext` only when tool definitions change
 
 ## Troubleshooting
 
@@ -230,7 +349,7 @@ This gives you:
 
 **View extension logs:**
 ```bash
-zot ext logs mcp-bridge -f
+zot ext logs mcp -f
 ```
 
 **Common issues:**
@@ -241,7 +360,7 @@ zot ext logs mcp-bridge -f
 
 ## Limitations
 
-- **No OAuth flow** — authentication requires manual token configuration in headers
+- **OAuth scope** — `/mcp login <server>` supports HTTPS servers with dynamic public-client registration. Pre-registered clients and remote/headless callback forwarding are not supported yet. Static header authentication remains available.
 - **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
@@ -260,7 +379,7 @@ go vet ./...
 zot --ext .
 
 # View logs
-zot ext logs mcp-bridge -f
+zot ext logs mcp -f
 ```
 
 ## License
@@ -284,3 +403,6 @@ Tested MCP servers:
 
 Note: grep.app uses the root endpoint `/`. Streamable HTTP protocol headers are handled automatically by the bridge and should not be written to `mcp.json`.
 
+## What the paired phone sees
+
+Build Remote Agent exposes terminal windows on the machine. Its loopback `:8788` endpoint is a Bot API that returns JSON, not an MCP endpoint or terminal transcript. See the third-party's [current phone visibility documentation](https://github.com/LinespottingOrg/GrokBuildRemote-Agents/blob/main/docs/WHAT-THE-PHONE-SEES.md) for details.
