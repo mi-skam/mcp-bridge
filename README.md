@@ -39,7 +39,7 @@ Expansion uses the bridge process environment after global/project configuration
 
 ## Quick Start
 
-Requires [Go 1.25+](https://go.dev/dl/) on `PATH`; the extension compiles itself on first start.
+Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Like the upstream examples, the extension runs from source via `go run .` — no architecture-specific binary to ship. To skip the compile step at startup, `go build -o mcp-bridge .` in the installed directory and set `"exec": "./mcp-bridge"` (drop `args`) in `extension.json`.
 
 1. **Install the extension:**
 

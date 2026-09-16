@@ -11,7 +11,7 @@ build:
 test:
 	go vet ./... && go test ./...
 
-# Copies this directory (incl. run.sh, which builds on first start).
+# Copies this directory; extension.json runs `go run .` so no binary is needed.
 install:
 	-zot ext remove $(EXT) --yes
 	zot ext install .
