@@ -121,15 +121,26 @@ func startBackgroundToolRefresh(e *ext.Extension, b *bridge, logger *log.Logger,
 		changed, err := b.refreshToolCache(ctx, cachePath)
 		if err != nil {
 			logger.Printf("tool cache refresh error: %v", err)
-			notifyText(e, "warn", "MCP tool cache refresh partially failed: "+err.Error())
-			return
 		}
-		if changed {
-			notifyText(e, "success", "MCP tool cache changed. Run /reload-ext once to load the updated tools.")
-			return
-		}
-		notifyBridgeStatus(e, b)
+		reportRefresh(e, b, changed, err)
 	}()
+}
+
+// reportRefresh tells the user what a cache refresh means for them. The reload
+// hint has to come first: a single unreachable server must not hide the fact
+// that the other servers wrote new tool definitions the running session
+// cannot see until /reload-ext (zot ignores register_tool after ready).
+func reportRefresh(e *ext.Extension, b *bridge, changed bool, err error) {
+	if changed {
+		notifyText(e, "success", "MCP tool cache changed. Run /reload-ext once to load the updated tools.")
+	}
+	if err != nil {
+		notifyText(e, "warn", "MCP tool cache refresh partially failed: "+err.Error())
+		return
+	}
+	if !changed {
+		notifyBridgeStatus(e, b)
+	}
 }
 
 // registerCommands sets up the /mcp slash commands.
@@ -330,15 +341,7 @@ func handleRefreshCommand(e *ext.Extension, b *bridge, cachePath string) ext.Res
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		changed, err := b.refreshToolCache(ctx, cachePath)
-		if err != nil {
-			notifyText(e, "warn", "MCP tool cache refresh partially failed: "+err.Error())
-			return
-		}
-		if changed {
-			notifyText(e, "success", "MCP tool cache changed. Run /reload-ext once to load the updated tools.")
-			return
-		}
-		notifyBridgeStatus(e, b)
+		reportRefresh(e, b, changed, err)
 	}()
 	return ext.Noop()
 }

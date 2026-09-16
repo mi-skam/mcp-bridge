@@ -159,12 +159,23 @@ func (b *bridge) registerCachedTools(cache toolCache) int {
 // refreshToolCache discovers live tools and updates the on-disk cache.
 // It reports whether the cache changed; callers should only ask for /reload-ext
 // when changed is true.
+//
+// The cache is shared by every zot session on this machine while the server
+// set differs per cwd (global mcp.json + project .mcp.json). The refresh
+// therefore only replaces the entries of servers it actually sees and keeps
+// everything else, so a session in a cwd without project servers cannot wipe
+// the tools another cwd relies on. Servers that fail discovery keep their
+// previous entry as well. ponytail: entries of servers removed from every
+// config are never pruned; registerCachedTools ignores them via fingerprint.
 func (b *bridge) refreshToolCache(ctx context.Context, path string) (bool, error) {
 	previous, err := readToolCache(path)
 	if err != nil {
 		b.logger.Printf("read existing tool cache: %v", err)
 	}
 	cache := toolCache{Version: toolCacheVersion, Servers: map[string]cachedServer{}}
+	for name, srv := range previous.Servers {
+		cache.Servers[name] = srv
+	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(b.servers))
 	var mu sync.Mutex
