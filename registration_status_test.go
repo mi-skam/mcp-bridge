@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestRegistrationStatus(t *testing.T) {
@@ -12,7 +12,7 @@ func TestRegistrationStatus(t *testing.T) {
 		"one":   {serverName: "test"},
 		"other": {serverName: "another"},
 	}}
-	s := &managedServer{name: "test", state: stateReady, tools: []mcp.Tool{{Name: "one"}, {Name: "two"}}}
+	s := &managedServer{name: "test", state: stateReady, tools: []*mcp.Tool{{Name: "one"}, {Name: "two"}}}
 	if got := b.registeredToolCount("test"); got != 1 {
 		t.Fatalf("registered = %d, want 1", got)
 	}
@@ -50,7 +50,7 @@ func TestLoginSlotIsExclusive(t *testing.T) {
 }
 
 func TestLogoutStatusIsNotSleeping(t *testing.T) {
-	s := &managedServer{name: "n8n", state: stateStopped, tools: []mcp.Tool{{Name: "a"}}}
+	s := &managedServer{name: "n8n", state: stateStopped, tools: []*mcp.Tool{{Name: "a"}}}
 	if !strings.Contains(s.status(), "SLEEPING") {
 		t.Fatalf("precondition: %s", s.status())
 	}

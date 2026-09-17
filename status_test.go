@@ -12,14 +12,14 @@ import (
 	"testing/iotest"
 	"unicode/utf8"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestManagedServerStatusCompact(t *testing.T) {
 	s := newManagedServer("grep", ServerConfig{}, "", log.New(io.Discard, "", 0))
 
 	s.state = stateReady
-	s.tools = []mcp.Tool{{Name: "searchGitHub"}}
+	s.tools = []*mcp.Tool{{Name: "searchGitHub"}}
 	if got, want := s.status(), "grep: READY — 1 tool discovered"; got != want {
 		t.Fatalf("ready status = %q, want %q", got, want)
 	}
@@ -40,10 +40,10 @@ func TestFormatStatusSummaryCompact(t *testing.T) {
 	b := &bridge{servers: map[string]*managedServer{}}
 	b.servers["grep"] = newManagedServer("grep", ServerConfig{}, "", log.New(io.Discard, "", 0))
 	b.servers["grep"].state = stateReady
-	b.servers["grep"].tools = []mcp.Tool{{Name: "searchGitHub"}}
+	b.servers["grep"].tools = []*mcp.Tool{{Name: "searchGitHub"}}
 	b.servers["n8n-mcp"] = newManagedServer("n8n-mcp", ServerConfig{}, "", log.New(io.Discard, "", 0))
 	b.servers["n8n-mcp"].state = stateReady
-	b.servers["n8n-mcp"].tools = make([]mcp.Tool, 26)
+	b.servers["n8n-mcp"].tools = make([]*mcp.Tool, 26)
 
 	if got, want := formatStatusSummary(b), "MCP status (last known; not a live health check)\ngrep: READY — 1 tool discovered\nn8n-mcp: READY — 26 tools discovered"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
@@ -62,14 +62,14 @@ func TestManagedServerStopBeforeStartDoesNotPanic(t *testing.T) {
 }
 
 func TestMCPToolSchemaPreservesExtraFields(t *testing.T) {
-	schema := mcpToolSchema(mcp.Tool{
+	schema := mcpToolSchema(&mcp.Tool{
 		Name: "query",
-		InputSchema: mcp.ToolInputSchema{
-			Type:                 "object",
-			Properties:           map[string]any{"sql": map[string]any{"type": "string"}},
-			Required:             []string{"sql"},
-			Defs:                 map[string]any{"Thing": map[string]any{"type": "object"}},
-			AdditionalProperties: false,
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"sql": map[string]any{"type": "string"}},
+			"required":             []string{"sql"},
+			"$defs":                map[string]any{"Thing": map[string]any{"type": "object"}},
+			"additionalProperties": false,
 		},
 	})
 
@@ -100,7 +100,7 @@ func TestNotifyLevelWarnOnPartialFailure(t *testing.T) {
 	b := &bridge{servers: map[string]*managedServer{}}
 	b.servers["grep"] = newManagedServer("grep", ServerConfig{}, "", log.New(io.Discard, "", 0))
 	b.servers["grep"].state = stateReady
-	b.servers["grep"].tools = []mcp.Tool{{Name: "searchGitHub"}}
+	b.servers["grep"].tools = []*mcp.Tool{{Name: "searchGitHub"}}
 	b.servers["broken"] = newManagedServer("broken", ServerConfig{}, "", log.New(io.Discard, "", 0))
 	b.servers["broken"].state = stateError
 	b.servers["broken"].startErr = errors.New("authorization required\nmore detail")
@@ -126,7 +126,7 @@ func TestStopDuringStartDiscardsStaleResult(t *testing.T) {
 	s.stop()
 
 	// The in-flight attempt now tries to commit with a stale generation.
-	err := s.finishStart(gen, nil, []mcp.Tool{{Name: "late"}}, nil)
+	err := s.finishStart(gen, nil, []*mcp.Tool{{Name: "late"}}, nil)
 	if err == nil {
 		t.Fatal("expected error committing a stale start")
 	}
@@ -204,7 +204,7 @@ func TestMCPResultToZot(t *testing.T) {
 	}
 
 	res := &mcp.CallToolResult{
-		Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "hello"}},
+		Content: []mcp.Content{&mcp.TextContent{Text: "hello"}},
 		IsError: true,
 	}
 	got := mcpResultToZot(res)

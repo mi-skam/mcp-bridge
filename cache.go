@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const toolCacheVersion = 1
@@ -84,7 +84,7 @@ func writeToolCache(path string, cache toolCache) error {
 	return writeFileAtomic(path, data, 0o600)
 }
 
-func cachedToolFromMCP(serverName string, tool mcp.Tool) (cachedTool, error) {
+func cachedToolFromMCP(serverName string, tool *mcp.Tool) (cachedTool, error) {
 	schema := mcpToolSchema(tool)
 	schemaJSON, err := json.Marshal(schema)
 	if err != nil {

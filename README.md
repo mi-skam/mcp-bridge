@@ -19,9 +19,9 @@ This extension reads MCP server configurations from standard locations (same for
 - **Slash commands** — `/mcp` to check status, start/stop/restart servers
 - **Better error messages** — context-aware errors with actionable suggestions
 
-## Interactive OAuth (experimental)
+## Interactive OAuth
 
-For an HTTP server requiring browser authorization, run `/mcp auth <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
+For an HTTP server requiring browser authorization, run `/mcp auth <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the official [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) `auth` package for metadata discovery (protected-resource and authorization-server metadata, with the 2025-03-26 fallback), public-client registration (a stored registration is reused; a fresh `/mcp auth` registers anew), PKCE, token refresh, and step-up scopes. Discovery deliberately allows private IPs, because VPN-hosted MCP servers are the common case here. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
 
 The command returns immediately; the result arrives as a notification once the browser round-trip completes, and the server reconnects on its own. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
 
@@ -39,7 +39,7 @@ Expansion uses the bridge process environment after global/project configuration
 
 ## Quick Start
 
-Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Like the upstream examples, the extension runs from source via `go run .` — no architecture-specific binary to ship. To skip the compile step at startup, `go build -o mcp-bridge .` in the installed directory and set `"exec": "./mcp-bridge"` (drop `args`) in `extension.json`.
+Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Built on the official `modelcontextprotocol/go-sdk` (v2.0.0+; v1.x used `mark3labs/mcp-go`). Upgrading from v1.x keeps OAuth credentials; tool schemas are re-cached once because go-sdk preserves them verbatim. Like the upstream examples, the extension runs from source via `go run .` — no architecture-specific binary to ship. To skip the compile step at startup, `go build -o mcp-bridge .` in the installed directory and set `"exec": "./mcp-bridge"` (drop `args`) in `extension.json`.
 
 1. **Install the extension:**
 

@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/patriceckhart/zot/packages/agent/ext"
 )
 
@@ -155,10 +156,10 @@ func (b *bridge) registerCachedTools(cache toolCache) int {
 		if !ok || cached.Fingerprint != serverFingerprint(srv.config) {
 			continue
 		}
-		cachedNames := make([]mcp.Tool, 0, len(cached.Tools))
+		cachedNames := make([]*mcp.Tool, 0, len(cached.Tools))
 		for _, tool := range cached.Tools {
 			b.registerCachedTool(serverName, tool)
-			cachedNames = append(cachedNames, mcp.Tool{Name: tool.Name})
+			cachedNames = append(cachedNames, &mcp.Tool{Name: tool.Name})
 			count++
 		}
 		srv.mu.Lock()
@@ -205,7 +206,7 @@ func (b *bridge) refreshToolCache(ctx context.Context, path string) (bool, error
 			}
 
 			s.mu.Lock()
-			tools := append([]mcp.Tool(nil), s.tools...)
+			tools := append([]*mcp.Tool(nil), s.tools...)
 			s.mu.Unlock()
 
 			cachedTools := make([]cachedTool, 0, len(tools))
@@ -383,24 +384,30 @@ func scoreToolMatch(terms []string, zotName string, mapping toolMapping) int {
 	return score
 }
 
-func mcpToolDescription(serverName string, tool mcp.Tool) string {
+func mcpToolDescription(serverName string, tool *mcp.Tool) string {
 	desc := tool.Description
-	if tool.Annotations.Title != "" {
-		desc = tool.Annotations.Title + ": " + desc
+	title := tool.Title
+	if title == "" && tool.Annotations != nil {
+		title = tool.Annotations.Title
+	}
+	if title != "" {
+		desc = title + ": " + desc
 	}
 
 	var hints []string
-	if tool.Annotations.ReadOnlyHint != nil && *tool.Annotations.ReadOnlyHint {
-		hints = append(hints, "read-only")
-	}
-	if tool.Annotations.IdempotentHint != nil && *tool.Annotations.IdempotentHint {
-		hints = append(hints, "idempotent")
-	}
-	if tool.Annotations.OpenWorldHint != nil && !*tool.Annotations.OpenWorldHint {
-		hints = append(hints, "closed-world")
-	}
-	if tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint {
-		hints = append(hints, "destructive")
+	if a := tool.Annotations; a != nil {
+		if a.ReadOnlyHint {
+			hints = append(hints, "read-only")
+		}
+		if a.IdempotentHint {
+			hints = append(hints, "idempotent")
+		}
+		if a.OpenWorldHint != nil && !*a.OpenWorldHint {
+			hints = append(hints, "closed-world")
+		}
+		if a.DestructiveHint != nil && *a.DestructiveHint {
+			hints = append(hints, "destructive")
+		}
 	}
 	if len(hints) > 0 {
 		desc += " [" + strings.Join(hints, ", ") + "]"
@@ -411,29 +418,16 @@ func mcpToolDescription(serverName string, tool mcp.Tool) string {
 	return desc
 }
 
-// mcpToolSchema converts an MCP Tool's input schema to a JSON Schema value.
-func mcpToolSchema(tool mcp.Tool) any {
-	if len(tool.RawInputSchema) > 0 {
-		return json.RawMessage(tool.RawInputSchema)
+// mcpToolSchema returns the tool's input schema as sent on the wire. go-sdk
+// keeps it verbatim (mcp-go used to rebuild it from typed fields, which
+// dropped $schema and added empty properties/required).
+func mcpToolSchema(tool *mcp.Tool) any {
+	if tool.InputSchema == nil {
+		return map[string]any{"type": "object"}
 	}
-
-	schema := map[string]any{
-		"type":       tool.InputSchema.Type,
-		"properties": tool.InputSchema.Properties,
-	}
-	if len(tool.InputSchema.Required) > 0 {
-		schema["required"] = tool.InputSchema.Required
-	}
-	if len(tool.InputSchema.Defs) > 0 {
-		schema["$defs"] = tool.InputSchema.Defs
-	}
-	if tool.InputSchema.AdditionalProperties != nil {
-		schema["additionalProperties"] = tool.InputSchema.AdditionalProperties
-	}
-	return schema
+	return tool.InputSchema
 }
 
-// handleToolCall routes a zot tool call to the appropriate MCP server.
 func (b *bridge) handleToolCall(zotName string, args json.RawMessage) ext.ToolResult {
 	b.mu.Lock()
 	mapping, ok := b.mapping[zotName]
@@ -495,13 +489,19 @@ func mcpResultToZot(result *mcp.CallToolResult) ext.ToolResult {
 	var contents []ext.ToolContent
 	for _, c := range result.Content {
 		switch v := c.(type) {
-		case mcp.TextContent:
+		case *mcp.TextContent:
 			contents = append(contents, ext.Text(v.Text))
-		case mcp.ImageContent:
-			contents = append(contents, ext.Image(v.MIMEType, v.Data))
+		case *mcp.ImageContent:
+			// go-sdk holds decoded bytes; zot wants the wire base64.
+			contents = append(contents, ext.Image(v.MIMEType, base64.StdEncoding.EncodeToString(v.Data)))
 		default:
-			// Fallback: try to marshal as JSON
 			data, _ := json.Marshal(v)
+			contents = append(contents, ext.Text(string(data)))
+		}
+	}
+	// Structured output without a text rendering: surface it as JSON.
+	if len(contents) == 0 && result.StructuredContent != nil {
+		if data, err := json.Marshal(result.StructuredContent); err == nil {
 			contents = append(contents, ext.Text(string(data)))
 		}
 	}

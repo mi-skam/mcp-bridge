@@ -13,18 +13,19 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // serverState tracks the lifecycle of one MCP server.
@@ -61,8 +62,8 @@ type managedServer struct {
 
 	mu       sync.Mutex
 	state    serverState
-	client   *client.Client
-	tools    []mcp.Tool
+	client   *mcp.ClientSession
+	tools    []*mcp.Tool
 	lastUsed time.Time
 	startErr error
 	recent []string // bounded lifecycle log; excludes raw server output and credentials
@@ -139,7 +140,7 @@ func (s *managedServer) start(ctx context.Context) error {
 
 // finishStart commits the outcome of a start attempt, unless stop()
 // bumped the generation in the meantime.
-func (s *managedServer) finishStart(gen uint64, c *client.Client, tools []mcp.Tool, err error) error {
+func (s *managedServer) finishStart(gen uint64, c *mcp.ClientSession, tools []*mcp.Tool, err error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -171,158 +172,170 @@ func (s *managedServer) finishStart(gen uint64, c *client.Client, tools []mcp.To
 	return nil
 }
 
-// doStart performs the actual spawn + initialize + tools/list.
-func (s *managedServer) doStart(ctx context.Context) (*client.Client, []mcp.Tool, error) {
-	var c *client.Client
-	var err error
+// doStart connects (spawn or HTTP), initializes, and lists tools.
+func (s *managedServer) doStart(ctx context.Context) (*mcp.ClientSession, []*mcp.Tool, error) {
+	return s.connect(ctx, nil)
+}
 
+// connect performs one connection attempt. sess carries an explicit
+// interactive OAuth flow (/mcp auth); nil means background: stored
+// credentials may be used and refreshed, but no browser ever opens.
+func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.ClientSession, []*mcp.Tool, error) {
+	var t mcp.Transport
+	var err error
 	switch s.config.Transport {
 	case "stdio", "":
-		c, err = s.startStdio()
-	case "streamable-http":
-		c, err = s.startStreamableHTTP(ctx)
-	case "sse":
-		c, err = s.startSSE(ctx)
+		t, err = s.stdioTransport()
+	case "streamable-http", "sse":
+		t, err = s.httpTransport(sess)
 	default:
 		return nil, nil, fmt.Errorf("unknown transport: %s", s.config.Transport)
 	}
-
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Initialize the MCP session
-	_, err = c.Initialize(ctx, mcp.InitializeRequest{
-		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-			ClientInfo: mcp.Implementation{
-				Name:    "zot-mcp-bridge",
-				Version: "1.0.0",
-			},
-			Capabilities: mcp.ClientCapabilities{},
-		},
-	})
+	client := mcp.NewClient(&mcp.Implementation{Name: "zot-mcp-bridge", Version: version}, nil)
+	if s.cwd != "" {
+		client.AddRoots(&mcp.Root{URI: "file://" + s.cwd, Name: "project"})
+	}
+	cs, err := client.Connect(ctx, t, nil)
 	if err != nil {
-		c.Close()
+		if errors.Is(err, errAuthRequired) {
+			return nil, nil, fmt.Errorf("initialize: %w", errAuthRequired)
+		}
 		return nil, nil, fmt.Errorf("initialize: %w", err)
 	}
-
-	// Discover tools
-	result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
-	if err != nil {
-		c.Close()
-		return nil, nil, fmt.Errorf("list tools: %w", err)
+	if s.config.Transport != "stdio" && s.config.Transport != "" {
+		s.logger.Printf("[%s] connected to %s", s.name, s.config.URL)
 	}
 
-	return c, result.Tools, nil
+	var tools []*mcp.Tool
+	var cursor string
+	for {
+		res, err := cs.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			cs.Close()
+			return nil, nil, fmt.Errorf("list tools: %w", err)
+		}
+		tools = append(tools, res.Tools...)
+		if res.NextCursor == "" {
+			break
+		}
+		cursor = res.NextCursor
+	}
+	return cs, tools, nil
 }
 
-// startStdio spawns a stdio-based MCP server.
-func (s *managedServer) startStdio() (*client.Client, error) {
+// stdioTransport spawns the server process. It runs from the zot session's
+// project directory (or the configured cwd), not the extension install dir:
+// many servers treat their process cwd as project root. The exec.Cmd is not
+// bound to the connect context; the session owns the process lifetime.
+func (s *managedServer) stdioTransport() (mcp.Transport, error) {
 	if s.config.Command == "" {
 		return nil, fmt.Errorf("stdio transport requires 'command' field")
 	}
-
-	// mcp-go merges this slice with os.Environ() before spawning the subprocess.
-	env := make([]string, 0, len(s.config.Env))
+	cmd := exec.Command(s.config.Command, s.config.Args...)
+	cmd.Env = os.Environ()
 	for k, v := range s.config.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-
-	// Create stdio client (this spawns the subprocess). Run stdio MCP
-	// servers from the zot session's project directory, not the installed
-	// extension directory. Many MCP servers use their process cwd as their
-	// project root when answering relative-path or directory-listing
-	// requests, so inheriting mcp-bridge's cwd makes them operate on the
-	// extension install instead of the user's project.
-	c, err := client.NewStdioMCPClientWithOptions(
-		s.config.Command,
-		env,
-		s.config.Args,
-		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
-			cmd := exec.CommandContext(ctx, command, args...)
-			cmd.Env = append(os.Environ(), env...)
-			if s.config.Cwd != "" {
-				cmd.Dir = s.config.Cwd
-			} else if s.cwd != "" {
-				cmd.Dir = s.cwd
-			}
-			return cmd, nil
-		}),
-	)
+	if s.config.Cwd != "" {
+		cmd.Dir = s.config.Cwd
+	} else if s.cwd != "" {
+		cmd.Dir = s.cwd
+	}
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("spawn %s: %w", s.config.Command, err)
+		return nil, err
 	}
-
-	// Capture stderr for debugging
-	if stderr, ok := client.GetStderr(c); ok {
-		go s.pipeStderr(stderr)
-	}
-
-	return c, nil
+	go s.pipeStderr(stderr)
+	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
-// startStreamableHTTP connects to an HTTP-based MCP server.
-func (s *managedServer) startStreamableHTTP(ctx context.Context) (*client.Client, error) {
+// httpTransport builds a streamable-HTTP or SSE transport with static headers
+// and, when credentials exist or a login is running, go-sdk OAuth.
+func (s *managedServer) httpTransport(sess *oauthSession) (mcp.Transport, error) {
 	if s.config.URL == "" {
-		return nil, fmt.Errorf("streamable-http transport requires 'url' field")
+		return nil, fmt.Errorf("%s transport requires 'url' field", s.config.Transport)
 	}
-
-	// Build HTTP options
-	opts := []transport.StreamableHTTPCOption{}
-
-	// Streamable HTTP requires Accept: application/json, text/event-stream.
-	// This is a protocol detail, so set it automatically. User-provided
-	// headers are merged on top for auth/customization.
-	headers := map[string]string{
-		"Accept": "application/json, text/event-stream",
+	hc := headerHTTPClient(s.config.Headers, time.Duration(s.config.RequestTimeout)*time.Second)
+	if sess == nil {
+		var err error
+		if sess, err = s.newOAuthSession(false, nil); err != nil {
+			return nil, err
+		}
 	}
-	for k, v := range s.config.Headers {
-		headers[k] = v
+	var handler auth.OAuthHandler
+	if sess != nil {
+		var err error
+		if handler, err = sess.handler(); err != nil {
+			return nil, err
+		}
 	}
-	opts = append(opts, transport.WithHTTPHeaders(headers))
-	oauth, err := s.oauthConfig()
-	if err != nil { return nil, err }
-	if oauth != nil { opts = append(opts, transport.WithHTTPOAuth(*oauth)) }
-
-	// Create streamable HTTP client
-	c, err := client.NewStreamableHttpClient(s.config.URL, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("create HTTP client: %w", err)
+	if s.config.Transport == "sse" {
+		if handler != nil {
+			// ponytail: go-sdk SSEClientTransport has no OAuthHandler field; wrap the client instead.
+			hc = oauthRoundTripper(hc, handler)
+		}
+		return &mcp.SSEClientTransport{Endpoint: s.config.URL, HTTPClient: hc}, nil
 	}
-
-	// Start the transport
-	if err := c.GetTransport().Start(ctx); err != nil {
-		return nil, fmt.Errorf("start HTTP transport: %w", err)
-	}
-
-	s.logger.Printf("[%s] connected to %s", s.name, s.config.URL)
-	return c, nil
+	return &mcp.StreamableClientTransport{Endpoint: s.config.URL, HTTPClient: hc, OAuthHandler: handler}, nil
 }
 
-// startSSE connects to an SSE-based MCP server (legacy transport).
-func (s *managedServer) startSSE(ctx context.Context) (*client.Client, error) {
-	if s.config.URL == "" {
-		return nil, fmt.Errorf("sse transport requires 'url' field")
+// headerHTTPClient adds static headers (auth tokens etc.) to every request.
+func headerHTTPClient(headers map[string]string, timeout time.Duration) *http.Client {
+	hc := &http.Client{Timeout: timeout}
+	if len(headers) > 0 {
+		hc.Transport = headerRoundTripper{headers, http.DefaultTransport}
 	}
+	return hc
+}
 
-	// Create SSE client
-	var opts []transport.ClientOption
-	oauth, err := s.oauthConfig()
-	if err != nil { return nil, err }
-	if oauth != nil { opts = append(opts, transport.WithOAuth(*oauth)) }
-	c, err := client.NewSSEMCPClient(s.config.URL, opts...)
+type headerRoundTripper struct {
+	headers map[string]string
+	next    http.RoundTripper
+}
+
+func (h headerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	for k, v := range h.headers {
+		r.Header.Set(k, v)
+	}
+	return h.next.RoundTrip(r)
+}
+
+// oauthRoundTripper adds a bearer token from the handler's token source.
+// Used for SSE only; streamable-HTTP gets full 401→Authorize handling from go-sdk.
+func oauthRoundTripper(hc *http.Client, h auth.OAuthHandler) *http.Client {
+	next := hc.Transport
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	out := *hc
+	out.Transport = bearerRoundTripper{h, next}
+	return &out
+}
+
+type bearerRoundTripper struct {
+	h    auth.OAuthHandler
+	next http.RoundTripper
+}
+
+func (b bearerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	ts, err := b.h.TokenSource(r.Context())
 	if err != nil {
-		return nil, fmt.Errorf("create SSE client: %w", err)
+		return nil, err
 	}
-
-	// Start the transport
-	if err := c.GetTransport().Start(ctx); err != nil {
-		return nil, fmt.Errorf("start SSE transport: %w", err)
+	if ts != nil {
+		tok, err := ts.Token()
+		if err != nil {
+			return nil, err
+		}
+		r = r.Clone(r.Context())
+		tok.SetAuthHeader(r)
 	}
-
-	s.logger.Printf("[%s] connected to SSE server at %s", s.name, s.config.URL)
-	return c, nil
+	return b.next.RoundTrip(r)
 }
 
 // pipeStderr reads server stderr line by line and logs it.
@@ -386,12 +399,7 @@ func (s *managedServer) callTool(ctx context.Context, toolName string, args json
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.config.RequestTimeout)*time.Second)
 	defer cancel()
 
-	result, err := c.CallTool(callCtx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      toolName,
-			Arguments: argsMap,
-		},
-	})
+	result, err := c.CallTool(callCtx, &mcp.CallToolParams{Name: toolName, Arguments: argsMap})
 	if err != nil {
 		return nil, err
 	}
