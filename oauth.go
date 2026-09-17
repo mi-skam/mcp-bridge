@@ -84,8 +84,8 @@ func (s *managedServer) login(ctx context.Context, showURL func(string)) error {
   w.Header().Set("Cache-Control", "no-store")
   if r.Method != http.MethodGet { http.Error(w,"OAuth callback requires GET",http.StatusMethodNotAllowed); return }
   states := r.URL.Query()["state"]
-  if len(states) != 1 || states[0] == "" { http.Error(w,"OAuth callback is missing a unique state parameter. Start a fresh /mcp login and use its complete authorization URL.",400); return }
-  if states[0] != state { http.Error(w,"OAuth state mismatch. This callback does not belong to the active login. Start a fresh /mcp login and close older authorization tabs.",400); return }
+  if len(states) != 1 || states[0] == "" { http.Error(w,"OAuth callback is missing a unique state parameter. Start a fresh /mcp auth and use its complete authorization URL.",400); return }
+  if states[0] != state { http.Error(w,"OAuth state mismatch. This callback does not belong to the active login. Start a fresh /mcp auth and close older authorization tabs.",400); return }
   code := r.URL.Query().Get("code")
   if code == "" { http.Error(w,"Authorization declined or missing code",400); return }
   select { case codes <- code: fmt.Fprint(w,"Authorization received. Return to zot."); default: http.Error(w,"Callback already received",409) }

@@ -31,7 +31,7 @@ func TestManagedServerStatusCompact(t *testing.T) {
 
 	s.state = stateError
 	s.startErr = errors.New("authorization required")
-	if got, want := s.status(), "grep: LOGIN REQUIRED — /mcp login grep"; got != want {
+	if got, want := s.status(), "grep: LOGIN REQUIRED — /mcp auth grep"; got != want {
 		t.Fatalf("error status = %q, want %q", got, want)
 	}
 }
@@ -105,7 +105,7 @@ func TestNotifyLevelWarnOnPartialFailure(t *testing.T) {
 	b.servers["broken"].state = stateError
 	b.servers["broken"].startErr = errors.New("authorization required\nmore detail")
 
-	if got, want := formatStatusSummary(b), "MCP status (last known; not a live health check)\nbroken: LOGIN REQUIRED — /mcp login broken\ngrep: READY — 1 tool discovered"; got != want {
+	if got, want := formatStatusSummary(b), "MCP status (last known; not a live health check)\nbroken: LOGIN REQUIRED — /mcp auth broken\ngrep: READY — 1 tool discovered"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
 	if got, want := b.notifyLevel(), "warn"; got != want {

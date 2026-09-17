@@ -67,6 +67,25 @@ type managedServer struct {
 	startErr error
 	recent []string // bounded lifecycle log; excludes raw server output and credentials
 	gen      uint64 // bumped by stop(); a start attempt only commits if unchanged
+	loginActive bool // one interactive OAuth flow at a time
+}
+
+// beginLogin claims the interactive OAuth slot; false when a flow is already running.
+func (s *managedServer) beginLogin() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loginActive {
+		return false
+	}
+	s.loginActive = true
+	s.recordEvent("AUTH started")
+	return true
+}
+
+func (s *managedServer) endLogin() {
+	s.mu.Lock()
+	s.loginActive = false
+	s.mu.Unlock()
 }
 
 // newManagedServer creates a new server wrapper.
@@ -125,6 +144,11 @@ func (s *managedServer) finishStart(gen uint64, c *client.Client, tools []mcp.To
 		s.startErr = err
 		s.recordEvent("FAILED (see current error)")
 		s.logger.Printf("[%s] start failed: %v", s.name, err)
+		if compactErr(err.Error()) == "auth failed" {
+			// Stored token expired and refresh was rejected (client registration purged, grant revoked)
+			// or the token endpoint was unreachable. mcp-go collapses both into one error.
+			s.recordEvent("AUTH REQUIRED: stored token unusable and refresh failed")
+		}
 		return err
 	}
 	s.client = c
@@ -415,7 +439,7 @@ func (s *managedServer) status() string {
 	case stateError:
 		if s.startErr != nil {
 			if compactErr(s.startErr.Error()) == "auth failed" {
-				return fmt.Sprintf("%s: LOGIN REQUIRED — /mcp login %s", s.name, s.name)
+				return fmt.Sprintf("%s: LOGIN REQUIRED — /mcp auth %s", s.name, s.name)
 			}
 			return fmt.Sprintf("%s: FAILED — %s", s.name, compactErr(s.startErr.Error()))
 		}

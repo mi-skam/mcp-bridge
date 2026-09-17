@@ -34,3 +34,17 @@ func TestRegistrationStatus(t *testing.T) {
 		t.Fatalf("sleeping tools must not be presented as live discovery: %s", detail)
 	}
 }
+
+func TestLoginSlotIsExclusive(t *testing.T) {
+	s := &managedServer{name: "n8n"}
+	if !s.beginLogin() || s.beginLogin() {
+		t.Fatal("second concurrent auth must be refused")
+	}
+	s.endLogin()
+	if !s.beginLogin() {
+		t.Fatal("slot must free after endLogin")
+	}
+	if !strings.Contains(s.detailStatus(0), "AUTH started") {
+		t.Fatal("auth start must appear in the lifecycle log")
+	}
+}

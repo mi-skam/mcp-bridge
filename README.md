@@ -21,9 +21,9 @@ This extension reads MCP server configurations from standard locations (same for
 
 ## Interactive OAuth (experimental)
 
-For an HTTP server requiring browser authorization, run `/mcp login <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
+For an HTTP server requiring browser authorization, run `/mcp auth <server>` to open the authorization URL in your default browser (`open` on macOS, `rundll32` on Windows, `xdg-open` elsewhere). The URL is also displayed as a manual fallback; clipboard contents are not changed. The bridge uses the existing mcp-go OAuth implementation for metadata discovery, dynamic public-client registration, PKCE and token refresh. A loopback callback listener checks state and expires after five minutes. Background discovery never launches a login flow.
 
-After authorization, run `/mcp refresh`. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
+The command returns immediately; the result arrives as a notification once the browser round-trip completes, and the server reconnects on its own. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
 
 `/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization and refresh against a real provider still need end-to-end validation.
 
@@ -363,7 +363,7 @@ zot ext logs mcp -f
 
 ## Limitations
 
-- **OAuth scope** — `/mcp login <server>` supports HTTPS servers with dynamic public-client registration. Pre-registered clients and remote/headless callback forwarding are not supported yet. Static header authentication remains available.
+- **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Pre-registered clients and remote/headless callback forwarding are not supported yet. Static header authentication remains available.
 - **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 

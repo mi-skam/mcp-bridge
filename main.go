@@ -179,7 +179,7 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			notifyText(e, "info", out)
 			return ext.Noop()
 
-		case "login", "logout":
+		case "auth", "login", "logout":
 			if b == nil || len(parts) != 2 { return ext.Errorf("usage: /mcp %s <server>", parts[0]) }
 			srv, ok := b.servers[parts[1]]
 			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
@@ -189,14 +189,27 @@ func registerCommands(e *ext.Extension, b *bridge) {
 				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
 				return ext.Noop()
 			}
-			if err := srv.login(context.Background(), func(u string) {
-				notifyText(e, "info", "Opening your browser for MCP authorization. If it does not open, use:\n"+u)
-				if err := openAuthorizationURL(u); err != nil {
-					notifyText(e, "warning", "Could not open the browser. Open the authorization URL above manually.")
+			// The browser round-trip outlasts zot's command timeout; answer now, report via notify.
+			if !srv.beginLogin() { return ext.Errorf("an authorization for %s is already in progress", srv.name) }
+			go func() {
+				defer srv.endLogin()
+				err := srv.login(context.Background(), func(u string) {
+					notifyText(e, "info", "Opening your browser for MCP authorization. If it does not open, use:\n"+u)
+					if err := openAuthorizationURL(u); err != nil {
+						notifyText(e, "warning", "Could not open the browser. Open the authorization URL above manually.")
+					}
+				})
+				if err != nil {
+					notifyText(e, "error", fmt.Sprintf("OAuth authorization for %s failed: %v", srv.name, err))
+					return
 				}
-			}); err != nil { return ext.Errorf("OAuth login: %v", err) }
-			srv.stop()
-			notifyText(e, "info", "OAuth credentials saved. Run /mcp refresh to reconnect and discover tools.")
+				srv.stop()
+				if err := srv.start(context.Background()); err != nil {
+					notifyText(e, "warning", fmt.Sprintf("OAuth credentials for %s saved, but reconnect failed: %v", srv.name, err))
+					return
+				}
+				notifyText(e, "success", fmt.Sprintf("%s authorized and connected.", srv.name))
+			}()
 			return ext.Noop()
 
 		case "start":
@@ -252,7 +265,7 @@ func mcpCommands() string {
 	sb.WriteString("  /mcp start <server|all>               Start one server, or all servers\n")
 	sb.WriteString("  /mcp stop <server|all>                Stop one server, or all servers\n")
 	sb.WriteString("  /mcp restart                          Restart all servers\n")
-	sb.WriteString("  /mcp login <server>                   Authorize in your browser (OAuth + PKCE)\n")
+	sb.WriteString("  /mcp auth <server>                    Authorize in your browser (OAuth + PKCE); alias: login\n")
 	sb.WriteString("  /mcp logout <server>                  Remove local OAuth credentials\n")
 	sb.WriteString("  /mcp refresh                          Refresh cached tool definitions\n")
 	sb.WriteString("  /mcp help                             Show all MCP commands\n")
