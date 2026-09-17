@@ -155,7 +155,7 @@ func (s *managedServer) finishStart(gen uint64, c *mcp.ClientSession, tools []*m
 		s.startErr = err
 		s.recordEvent("FAILED (see current error)")
 		s.logger.Printf("[%s] start failed: %v", s.name, err)
-		if compactErr(err.Error()) == "auth failed" {
+		if needsAuth(err) {
 			// Stored token expired and refresh was rejected (client registration purged, grant revoked)
 			// or the token endpoint was unreachable. mcp-go collapses both into one error.
 			s.recordEvent("AUTH REQUIRED: stored token unusable and refresh failed")
@@ -457,7 +457,7 @@ func (s *managedServer) status() string {
 		return fmt.Sprintf("%s: READY — %s discovered", s.name, toolCountText(len(s.tools)))
 	case stateError:
 		if s.startErr != nil {
-			if compactErr(s.startErr.Error()) == "auth failed" {
+			if needsAuth(s.startErr) {
 				return fmt.Sprintf("%s: LOGIN REQUIRED — /mcp auth %s", s.name, s.name)
 			}
 			return fmt.Sprintf("%s: FAILED — %s", s.name, compactErr(s.startErr.Error()))
@@ -582,6 +582,13 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return s
+}
+
+// needsAuth reports whether a start error means the user must run /mcp auth.
+// errAuthRequired is the typed signal from oauth.go; the string match covers a
+// plain 401/403 from a server with no stored credentials at all.
+func needsAuth(err error) bool {
+	return err != nil && (errors.Is(err, errAuthRequired) || compactErr(err.Error()) == "auth failed")
 }
 
 func compactErr(s string) string {
