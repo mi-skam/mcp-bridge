@@ -14,6 +14,6 @@ func TestMCPCommandsAndStatusSeparate(t *testing.T) {
  for i:=0; i<12; i++ { s.recordEvent("CONNECTING") }
  s.mu.Unlock()
  if len(s.recent)!=8 { t.Fatal("unbounded log") }
- detail:=s.detailStatus()
+ detail:=s.detailStatus(0)
  if !strings.Contains(detail,"RECENT LIFECYCLE LOG") || strings.Count(detail,"CONNECTING")!=8 { t.Fatal("missing log excerpt") }
 }

@@ -170,7 +170,7 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			if b == nil { return ext.Errorf("no servers configured") }
 			srv, ok := b.servers[parts[1]]
 			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
-			notifyText(e, serverNotifyLevel(srv), srv.detailStatus())
+			notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
 			return ext.Noop()
 
 		case "setup":
@@ -223,7 +223,7 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			if !ok {
 				return ext.Errorf("unknown server: %s", name)
 			}
-			notifyText(e, serverNotifyLevel(srv), srv.detailStatus())
+			notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
 			return ext.Noop()
 		}
 	})

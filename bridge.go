@@ -82,6 +82,20 @@ func newBridge(e *ext.Extension, cwd string, logger *log.Logger) *bridge {
 	}
 }
 
+// registeredToolCount counts deferred definitions registered by this bridge,
+// not definitions already activated for the model by search_tools.
+func (b *bridge) registeredToolCount(server string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	count := 0
+	for _, mapping := range b.mapping {
+		if mapping.serverName == server {
+			count++
+		}
+	}
+	return count
+}
+
 // sanitizeName converts a string into a valid zot tool name component.
 // Zot tool names must match [a-zA-Z][a-zA-Z0-9_]*.
 var invalidChars = regexp.MustCompile(`[^a-zA-Z0-9]`)

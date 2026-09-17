@@ -437,7 +437,7 @@ func (s *managedServer) recordEvent(message string) {
 }
 
 // detailStatus returns a multi-line status for one server.
-func (s *managedServer) detailStatus() string {
+func (s *managedServer) detailStatus(registered int) string {
 	s.mu.Lock()
 	name := s.name
 	transport := s.config.Transport
@@ -470,9 +470,16 @@ func (s *managedServer) detailStatus() string {
 		sb.WriteByte(')')
 	}
 	sb.WriteByte('\n')
-	sb.WriteString("  tools: ")
-	sb.WriteString(toolCountText(toolCount))
-	sb.WriteByte('\n')
+	if state == stateReady {
+		sb.WriteString(fmt.Sprintf("  tools discovered (last successful connection): %d\n", toolCount))
+	} else {
+		sb.WriteString(fmt.Sprintf("  tools known (cached/previous discovery; not live): %d\n", toolCount))
+	}
+	sb.WriteString(fmt.Sprintf("  tools registered in this extension session (deferred): %d\n", registered))
+	// ponytail: counts cannot detect same-size schema changes; the refresh notification covers those.
+	if toolCount != registered {
+		sb.WriteString("  Tool counts differ. After a successful /mcp refresh, run /reload-ext.\n")
+	}
 	sb.WriteString("  transport: ")
 	sb.WriteString(transport)
 	sb.WriteByte('\n')
