@@ -44,7 +44,7 @@ Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Built on the official `modelc
 1. **Install the extension:**
 
    ```bash
-   zot ext install https://git.miskam.xyz/mxm/zot-mcp
+   zot ext install https://git.miskam.xyz/mxm/mcp-bridge
    ```
 
    From a checkout of the monorepo instead: `cd extensions/mcp-bridge && make`.
@@ -352,7 +352,7 @@ This gives you:
 
 **View extension logs:**
 ```bash
-zot ext logs mcp -f
+zot ext logs mcp-bridge -f
 ```
 
 **Common issues:**
@@ -382,7 +382,7 @@ go vet ./...
 zot --ext .
 
 # View logs
-zot ext logs mcp -f
+zot ext logs mcp-bridge -f
 ```
 
 ## License

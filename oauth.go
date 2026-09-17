@@ -146,7 +146,7 @@ func (o *oauthSession) handler() (auth.OAuthHandler, error) {
 		RedirectURL: redirect,
 		Client:      o.hc,
 		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{Metadata: &oauthex.ClientRegistrationMetadata{
-			ClientName:              "zot-mcp-bridge",
+			ClientName:              "mcp-bridge",
 			RedirectURIs:            []string{redirect},
 			TokenEndpointAuthMethod: "none",
 			GrantTypes:              []string{"authorization_code", "refresh_token"},

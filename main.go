@@ -23,7 +23,7 @@
 //
 // Build:
 //
-//	cd examples/extensions/mcp-bridge
+//	cd extensions/mcp-bridge
 //	go build -o mcp-bridge .
 //
 // Install:
@@ -43,7 +43,7 @@ import (
 )
 
 func main() {
-	e := ext.New("mcp", version)
+	e := ext.New("mcp-bridge", version)
 
 	// Logger writes to stderr (captured by zot into ext logs)
 	logger := log.New(os.Stderr, "[mcp-bridge] ", log.LstdFlags)

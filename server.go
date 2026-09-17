@@ -195,7 +195,7 @@ func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.C
 		return nil, nil, err
 	}
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "zot-mcp-bridge", Version: version}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-bridge", Version: version}, nil)
 	if s.cwd != "" {
 		client.AddRoots(&mcp.Root{URI: "file://" + s.cwd, Name: "project"})
 	}

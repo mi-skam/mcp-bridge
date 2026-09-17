@@ -1,7 +1,7 @@
 .PHONY: default build install uninstall test
 
 # Must match "name" in extension.json.
-EXT := mcp
+EXT := mcp-bridge
 
 default: install
 
