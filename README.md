@@ -275,6 +275,41 @@ zot ext logs mcp-bridge -f
 - **No completion/subscriptions** — argument completion and resource subscriptions are not exposed; add on demand
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
+## Binary releases
+
+Forgejo Actions (`.forgejo/workflows/release.yml`) runs on new `v*` tags. GoReleaser v2.18.2 cross-compiles with `CGO_ENABLED=0` on a Linux runner:
+
+- `mcp-bridge_<version>_linux_amd64.tar.gz` — Linux x86_64
+- `mcp-bridge_<version>_linux_arm64.tar.gz` — Linux aarch64
+- `mcp-bridge_<version>_darwin_arm64.tar.gz` — Apple Silicon macOS (unsigned, not notarized)
+- `checksums.txt` — SHA-256 hashes
+
+Each archive contains the executable, README, MIT license and an `extension.json` pointing at `./mcp-bridge`. The git manifest still uses `go run .`, so source installations remain compatible with current zot. The proposed [`binary` manifest block](https://github.com/patriceckhart/zot/discussions/183) is not enabled until zot supports downloading and verifying it.
+
+Download your archive and `checksums.txt` from the same release. In a new working directory, verify before extracting (replace the filename below with the downloaded asset):
+
+```sh
+asset=mcp-bridge_VERSION_darwin_arm64.tar.gz
+# Select exactly this asset from the checksum file; fail if absent or duplicated.
+awk -v asset="$asset" '$2 == asset { print; n++ } END { if (n != 1) exit 1 }' checksums.txt > selected-checksum.txt &&
+shasum -a 256 -c selected-checksum.txt &&
+mkdir extracted && tar -xzf "$asset" -C extracted &&
+zot ext install ./extracted
+```
+
+Use `sha256sum -c` instead of `shasum -a 256 -c` on Linux if needed. Checksums detect corruption; they are not an independent release signature. Do not extract over your source checkout or an existing installation.
+
+CI needs an `ubuntu-latest` Forgejo runner with Node.js for JavaScript actions and network access to download Go and GoReleaser. The job token is passed as `GITEA_TOKEN` to publish to this repository's releases; repository write permission must be enabled. No macOS runner or Go installation is needed on the user's machine for binary installations.
+
+Local packaging check (does not publish):
+
+```sh
+goreleaser check
+goreleaser release --snapshot --clean --skip=publish
+```
+
+Snapshots have a `-next` artifact name but keep the source version inside the binary and manifest. For releases, CI checks the tag against the manifest, and the existing version test checks the manifest against the code. Push a new version tag after merging the workflow; existing tags do not trigger it retroactively.
+
 ## Development
 
 Source of truth: `https://git.miskam.xyz/mxm/mcp-bridge`. The monorepo `zot-extension` consumes it as a submodule at `extensions/mcp-bridge`. Work in a checkout outside `$ZOT_HOME/extensions/`; `make install` refuses to run from the installed copy or with unpushed commits, because `zot ext remove` deletes that directory.

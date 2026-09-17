@@ -1,2 +1,4 @@
 .install
 /mcp-bridge
+dist-extension.json
+dist/

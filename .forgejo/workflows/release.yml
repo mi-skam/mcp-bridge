@@ -1,0 +1,52 @@
+# Release: on every v* tag, build linux/amd64, linux/arm64, darwin/arm64 with
+# goreleaser and attach archives + checksums.txt to a Forgejo Release.
+#
+# Requirements on the Forgejo side:
+#   - Actions enabled for the repo (Settings → Units → Actions)
+#   - A runner labelled ubuntu-latest with Node.js available for JS actions
+#   - No extra secrets: GITHUB_TOKEN is the built-in job token; goreleaser's
+#     gitea publisher reads it as GITEA_TOKEN.
+#
+# Tag flow: bump version.go + extension.json, commit, `git tag -a vX.Y.Z`,
+# `git push --tags`. The version test guards that manifest and code agree.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser needs tags and history for the changelog
+
+      - name: setup Go
+        uses: https://github.com/actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: verify tag matches manifest
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' extension.json)
+          [ "$tag" = "$manifest" ] || { echo "tag v$tag != extension.json version $manifest" >&2; exit 1; }
+
+      - name: test
+        run: go vet ./... && go test ./...
+
+      - name: goreleaser
+        uses: https://github.com/goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v2.18.2
+          args: release --clean
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # API and download URLs are pinned in .goreleaser.yaml.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}

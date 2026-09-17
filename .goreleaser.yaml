@@ -1,0 +1,88 @@
+# GoReleaser config for the mcp-bridge zot extension.
+#
+# Tag v* → Forgejo Actions runs `goreleaser release --clean`, which builds
+# every target, packs tar.gz archives, writes checksums.txt and uploads them
+# to a Forgejo Release. Naming follows goreleaser defaults, which is the
+# convention proposed for zot's `binary` manifest block
+# (github.com/patriceckhart/zot/discussions/183):
+#
+#   mcp-bridge_<version>_<os>_<arch>.tar.gz
+#   checksums.txt
+#
+# Local dry run: goreleaser release --snapshot --clean --skip=publish
+
+version: 2
+
+project_name: mcp-bridge
+
+before:
+  hooks:
+    # The git manifest runs from source (`go run .`); the release archive
+    # ships a binary, so it gets a manifest pointing at ./mcp-bridge.
+    - >-
+      sh -c 'sed -e "s|\"exec\": \"go\",|\"exec\": \"./mcp-bridge\",|" -e "/\"args\": \[\"run\", \".\"\],/d" extension.json > dist-extension.json'
+
+builds:
+  - id: mcp-bridge
+    main: .
+    binary: mcp-bridge
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: mcp-bridge
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # extension.json ships in the archive so `zot ext install` of a release
+    # tarball is self-contained. Its "exec" already points at ./mcp-bridge.
+    files:
+      - src: dist-extension.json
+        dst: extension.json
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^gofmt"
+      - "^ci:"
+      - "^README"
+
+gitea_urls:
+  api: https://git.miskam.xyz/api/v1
+  download: https://git.miskam.xyz
+
+release:
+  gitea:
+    owner: mxm
+    name: mcp-bridge
+  draft: false
+  prerelease: auto
+  header: |
+    ## mcp-bridge {{ .Tag }}
+
+    Prebuilt extension binaries for zot. Until `zot ext install` resolves
+    the `binary` manifest block itself, install manually:
+
+    Download the archive for your platform and `checksums.txt`. Verify its
+    SHA-256 before extracting into a new directory, then run
+    `zot ext install /path/to/extracted-directory`. See README.md for details.
+
+    Targets: linux/amd64 (x86_64), linux/arm64 (aarch64), darwin/arm64 (Apple Silicon).
+    macOS binaries are unsigned and not notarized.
