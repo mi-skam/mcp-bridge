@@ -299,7 +299,7 @@ zot ext install ./extracted
 
 Use `sha256sum -c` instead of `shasum -a 256 -c` on Linux if needed. Checksums detect corruption; they are not an independent release signature. Do not extract over your source checkout or an existing installation.
 
-CI needs an `ubuntu-latest` Forgejo runner with Node.js for JavaScript actions and network access to download Go and GoReleaser. The job token is passed as `GITEA_TOKEN` to publish to this repository's releases; repository write permission must be enabled. No macOS runner or Go installation is needed on the user's machine for binary installations.
+CI needs an `ubuntu-24.04` Forgejo runner with Node.js for JavaScript actions and network access to download Go and GoReleaser. The job token is passed as `GITEA_TOKEN` to publish to this repository's releases; repository write permission must be enabled. No macOS runner or Go installation is needed on the user's machine for binary installations.
 
 Local packaging check (does not publish):
 

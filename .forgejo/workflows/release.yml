@@ -3,7 +3,7 @@
 #
 # Requirements on the Forgejo side:
 #   - Actions enabled for the repo (Settings → Units → Actions)
-#   - A runner labelled ubuntu-latest with Node.js available for JS actions
+#   - A runner labelled ubuntu-24.04 with Node.js available for JS actions
 #   - No extra secrets: GITHUB_TOKEN is the built-in job token; goreleaser's
 #     gitea publisher reads it as GITEA_TOKEN.
 #
@@ -17,7 +17,7 @@ on:
 
 jobs:
   goreleaser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
