@@ -7,7 +7,7 @@ This extension reads MCP server configurations from standard locations (same for
 ## Features
 
 - **Standard config format** — same JSON as Claude Desktop, Cursor, Cline
-- **On-demand tool discovery** — a fixed set of five small tools is always advertised; matching MCP schemas load when needed instead of bloating every model request
+- **On-demand tool discovery** — a fixed set of six small tools is always advertised; matching MCP schemas load when needed instead of bloating every model request
 - **Resources and prompts** — `mcp__resources` lists/reads resources and templates, `mcp__prompts` lists/renders prompt templates
 - **Live catalogue** — `mcp__call` and `mcp__describe` reach tools discovered after startup; `tools/list_changed` refreshes the cache automatically
 - **Server notifications** — MCP logging at warning and above, and resource-update notifications, surface as zot notifications
@@ -30,6 +30,14 @@ For an HTTP server requiring browser authorization, run `/mcp auth <server>` to 
 The command returns immediately; the result arrives as a notification once the browser round-trip completes, and the server reconnects on its own. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
 
 `/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization, re-authorization after a purged client registration and fresh registration were validated end-to-end against n8n's MCP OAuth server.
+
+### Per-server OAuth configuration (2.1 work in progress)
+
+`oauth` accepts `true`, `false`, or an object with `clientId`, `clientSecret`, `scope`, and `redirectUri`. Fields support environment expansion. Explicit `false` disables OAuth; omission retains the existing stored-credential and explicit `/mcp auth` behavior. Configured clients take precedence over saved registrations; incompatible saved tokens are not reused.
+
+`redirectUri`, if supplied, must be an HTTP loopback IP URL with an explicit port, e.g. `http://127.0.0.1:33418/callback`. Remote callbacks are not supported. Omit it for an ephemeral loopback port. Keep client secrets in environment variables, not committed config files.
+
+URL-only server definitions infer Streamable HTTP unless `transport` or `type` selects another transport. Millisecond timeouts retain exact precision. Disabled entries stay visible in status and never connect or require environment secrets.
 
 ## Environment variables
 
@@ -222,15 +230,20 @@ it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 
 ## Tool Exposure
 
-The model always sees five fixed tools; everything else is deferred and loaded on demand.
+The model always sees six fixed tools; everything else is deferred and loaded on demand.
 
 | Tool | Purpose |
 |---|---|
 | `mcp__search_tools {query, limit}` | Search cached MCP tool names/descriptions and activate the matching deferred definitions |
 | `mcp__call {server, tool, args}` | Call any tool by server and MCP tool name, including tools discovered after startup |
 | `mcp__describe {server, tool?}` | Live tool list of a server, or one tool's input/output schema and annotations |
-| `mcp__resources {server, action: list\|read, uri?}` | Resources and URI templates; text as text, images as images |
+| `mcp__resources {server, action: list\|read\|subscribe\|unsubscribe, uri?}` | Resources and templates; text/images natively, other binary content as base64 JSON |
 | `mcp__prompts {server, action: list\|get, name?, args?}` | Prompt templates and rendered messages |
+| `mcp__control {server, action: ping\|logging/set\|complete, ...}` | Health check, logging level, prompt/resource argument completion |
+
+Completion takes `ref` (`type: ref/prompt` with `name`, or `type: ref/resource` with `uri`), `argument: {name, value}`, and optional `context: {arguments: {...}}`. Logging takes `level` from `debug` through `emergency`. Tool-call progress is reported through notifications with a request token.
+
+Subscriptions keep the connection awake. Explicit stop, logout, disconnect or extension reload ends subscriptions; subscribe again after reconnecting. Resource/prompt list-change notifications announce changes; listing always fetches the live catalogue.
 
 Deferred tools are namespaced `mcp__<server>__<tool>` (non-alphanumerics become `_`), e.g. `mcp__filesystem__read_file`. Once activated by `mcp__search_tools` they are called natively with their real schema, which is why the bridge keeps them alongside the generic `mcp__call`.
 
@@ -272,7 +285,7 @@ zot ext logs mcp-bridge -f
 
 - **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Remote/headless callback forwarding is not supported. Static header authentication remains available.
 - **No sampling/elicitation** — zot's extension protocol has no host API for nested model requests or user dialogs, so these server-to-client requests are not advertised
-- **No completion/subscriptions** — argument completion and resource subscriptions are not exposed; add on demand
+- **Parity validation in progress** — SSE authorization retry has a local HTTP test, not a full live SSE/browser acceptance run. Subscription continuity across reconnects is not implemented.
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
 ## Binary releases

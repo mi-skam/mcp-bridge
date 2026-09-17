@@ -18,10 +18,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -75,6 +78,8 @@ type managedServer struct {
 	events func(level, message string)
 	// onToolsChanged runs when the server announces tools/list_changed.
 	onToolsChanged func(server string)
+	subscriptions  map[string]bool // active session only; prevents idle shutdown
+	requestID      atomic.Uint64
 }
 
 // markLoggedOut records an explicit credential removal so status can say so
@@ -120,7 +125,10 @@ func newManagedServer(name string, cfg ServerConfig, cwd string, logger *log.Log
 // Safe to call concurrently; a stop() issued while a start is in
 // flight wins — the late result is discarded and its client closed.
 func (s *managedServer) start(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.config.ConnectTimeout)*time.Second)
+	if s.config.Disabled {
+		return fmt.Errorf("server %q is disabled", s.name)
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.config.connectDuration())
 	defer cancel()
 
 	s.mu.Lock()
@@ -202,7 +210,7 @@ func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.C
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-bridge", Version: version}, s.clientOptions())
 	if s.cwd != "" {
-		client.AddRoots(&mcp.Root{URI: "file://" + s.cwd, Name: "project"})
+		client.AddRoots(&mcp.Root{URI: projectRootURI(s.cwd), Name: "project"})
 	}
 	cs, err := client.Connect(ctx, t, nil)
 	if err != nil {
@@ -232,6 +240,14 @@ func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.C
 	return cs, tools, nil
 }
 
+func projectRootURI(path string) string {
+	path = filepath.ToSlash(path)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
 // clientOptions wires server-initiated notifications. Logging at warning and
 // above reaches the user; everything else goes to the extension log.
 func (s *managedServer) clientOptions() *mcp.ClientOptions {
@@ -241,6 +257,18 @@ func (s *managedServer) clientOptions() *mcp.ClientOptions {
 			if s.onToolsChanged != nil {
 				go s.onToolsChanged(s.name)
 			}
+		},
+		ProgressNotificationHandler: func(_ context.Context, r *mcp.ProgressNotificationClientRequest) {
+			if s.events != nil {
+				p := r.Params
+				s.events("info", fmt.Sprintf("%s [%v]: %g/%g %s", s.name, p.ProgressToken, p.Progress, p.Total, p.Message))
+			}
+		},
+		ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
+			s.catalogChanged("resources")
+		},
+		PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
+			s.catalogChanged("prompts")
 		},
 		LoggingMessageHandler: func(_ context.Context, r *mcp.LoggingMessageRequest) {
 			msg := fmt.Sprint(r.Params.Data)
@@ -264,6 +292,14 @@ func (s *managedServer) clientOptions() *mcp.ClientOptions {
 				s.events("info", fmt.Sprintf("%s: resource updated %s", s.name, r.Params.URI))
 			}
 		},
+	}
+}
+
+// Resource and prompt lists are fetched live, so notification requires no cache invalidation.
+func (s *managedServer) catalogChanged(kind string) {
+	s.recordEventLocked(strings.ToUpper(kind) + " CHANGED (server notification)")
+	if s.events != nil {
+		s.events("info", s.name+": "+kind+" list changed")
 	}
 }
 
@@ -305,7 +341,7 @@ func (s *managedServer) httpTransport(sess *oauthSession) (mcp.Transport, error)
 	if s.config.URL == "" {
 		return nil, fmt.Errorf("%s transport requires 'url' field", s.config.Transport)
 	}
-	hc := headerHTTPClient(s.config.Headers, time.Duration(s.config.RequestTimeout)*time.Second)
+	hc := headerHTTPClient(s.config.Headers, s.config.requestDuration())
 	if sess == nil {
 		var err error
 		if sess, err = s.newOAuthSession(false, nil); err != nil {
@@ -352,7 +388,7 @@ func (h headerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // oauthRoundTripper adds a bearer token from the handler's token source.
-// Used for SSE only; streamable-HTTP gets full 401→Authorize handling from go-sdk.
+// Used for SSE only; retry an authorization challenge once, never loop.
 func oauthRoundTripper(hc *http.Client, h auth.OAuthHandler) *http.Client {
 	next := hc.Transport
 	if next == nil {
@@ -369,6 +405,30 @@ type bearerRoundTripper struct {
 }
 
 func (b bearerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := b.send(r)
+	if err != nil || (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) {
+		return resp, err
+	}
+	// A consumed body cannot be retried unless the caller provided GetBody.
+	if r.Body != nil && r.Body != http.NoBody && r.GetBody == nil {
+		return resp, nil
+	}
+	if err := b.h.Authorize(r.Context(), r, resp); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	resp.Body.Close()
+	retry := r.Clone(r.Context())
+	if r.GetBody != nil {
+		retry.Body, err = r.GetBody()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return b.send(retry)
+}
+
+func (b bearerRoundTripper) send(r *http.Request) (*http.Response, error) {
 	ts, err := b.h.TokenSource(r.Context())
 	if err != nil {
 		return nil, err
@@ -403,6 +463,7 @@ func (s *managedServer) stop() {
 
 	s.recordEvent("STOP requested")
 	s.gen++ // invalidate any start attempt still in flight
+	s.subscriptions = nil
 	if s.client != nil {
 		s.client.Close()
 		s.client = nil
@@ -416,6 +477,9 @@ func (s *managedServer) stop() {
 // needed, under the configured request timeout. It is the single entry point
 // for every MCP request the bridge forwards.
 func (s *managedServer) withSession(ctx context.Context, fn func(context.Context, *mcp.ClientSession) error) error {
+	if s.config.Disabled {
+		return fmt.Errorf("server %q is disabled", s.name)
+	}
 	s.mu.Lock()
 	c := s.client
 	st := s.state
@@ -433,7 +497,7 @@ func (s *managedServer) withSession(ctx context.Context, fn func(context.Context
 		}
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.config.RequestTimeout)*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, s.config.requestDuration())
 	defer cancel()
 	if err := fn(callCtx, c); err != nil {
 		return err
@@ -454,7 +518,9 @@ func (s *managedServer) callTool(ctx context.Context, toolName string, args json
 	}
 	var result *mcp.CallToolResult
 	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) (err error) {
-		result, err = c.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: argsMap})
+		params := &mcp.CallToolParams{Name: toolName, Arguments: argsMap}
+		params.SetProgressToken(fmt.Sprintf("%s:%d", toolName, s.requestID.Add(1)))
+		result, err = c.CallTool(ctx, params)
 		return err
 	})
 	return result, err
@@ -517,6 +583,34 @@ func (s *managedServer) listResources(ctx context.Context) ([]*mcp.Resource, []*
 		return nil
 	})
 	return res, tpl, err
+}
+
+func (s *managedServer) resourceSubscription(ctx context.Context, uri string, subscribe bool) error {
+	return s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) error {
+		var err error
+		if subscribe {
+			err = c.Subscribe(ctx, &mcp.SubscribeParams{URI: uri})
+		} else {
+			err = c.Unsubscribe(ctx, &mcp.UnsubscribeParams{URI: uri})
+		}
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.client != c {
+			return fmt.Errorf("connection stopped during subscription change")
+		}
+		if subscribe {
+			if s.subscriptions == nil {
+				s.subscriptions = make(map[string]bool)
+			}
+			s.subscriptions[uri] = true
+		} else {
+			delete(s.subscriptions, uri)
+		}
+		return nil
+	})
 }
 
 func (s *managedServer) readResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
@@ -587,7 +681,7 @@ func (s *managedServer) waitForReady(ctx context.Context) error {
 func (s *managedServer) isIdle(timeout time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state != stateReady {
+	if s.state != stateReady || len(s.subscriptions) > 0 {
 		return false
 	}
 	return time.Since(s.lastUsed) > timeout
@@ -595,6 +689,9 @@ func (s *managedServer) isIdle(timeout time.Duration) bool {
 
 // status returns a compact human-readable status string.
 func (s *managedServer) status() string {
+	if s.config.Disabled {
+		return s.name + ": DISABLED"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -659,7 +756,11 @@ func (s *managedServer) detailStatus(registered int) string {
 	sb.WriteString(name)
 	sb.WriteByte('\n')
 	sb.WriteString("  status: ")
-	sb.WriteString(state.String())
+	if s.config.Disabled {
+		sb.WriteString("disabled")
+	} else {
+		sb.WriteString(state.String())
+	}
 	if state == stateError && startErr != nil {
 		sb.WriteString(" (")
 		sb.WriteString(compactErr(startErr.Error()))

@@ -43,11 +43,11 @@ func TestLoadConfigZotMCPCompat(t *testing.T) {
 	if got := cfg.MCPServers["rel"].Cwd; got != filepath.Join(proj, "sub", "dir") {
 		t.Fatalf("relative cwd = %q", got)
 	}
-	if _, ok := cfg.MCPServers["gone"]; ok {
-		t.Fatal("disabled server must be dropped")
+	if s, ok := cfg.MCPServers["gone"]; !ok || !s.Disabled {
+		t.Fatal("disabled server must remain configured")
 	}
 	ms := cfg.MCPServers["ms"]
-	if ms.ConnectTimeout != 2 || ms.RequestTimeout != 60 || ms.ConnectTimeoutMs != 0 {
+	if ms.ConnectTimeout != 30 || ms.RequestTimeout != 60 || ms.ConnectTimeoutMs != 1500 || ms.RequestTimeoutMs != 60000 {
 		t.Fatalf("ms aliases: %+v", ms)
 	}
 }

@@ -50,8 +50,8 @@ var mcpResourcesSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "server": {"type": "string", "description": "Configured MCP server name."},
-    "action": {"type": "string", "enum": ["list", "read"], "description": "list: resources and URI templates. read: fetch one resource by URI."},
-    "uri": {"type": "string", "description": "Resource URI for read."}
+    "action": {"type": "string", "enum": ["list", "read", "subscribe", "unsubscribe"], "description": "List resources/templates, read a URI, or manage session-scoped update subscriptions."},
+    "uri": {"type": "string", "description": "Resource URI for read, subscribe or unsubscribe."}
   },
   "required": ["server", "action"],
   "additionalProperties": false
@@ -84,6 +84,7 @@ func (b *bridge) registerProtocolTools() {
 	b.e.Tool(mcpPromptsToolName,
 		"List or render MCP prompt templates offered by a server.",
 		mcpPromptsSchema, b.promptsTool)
+	b.e.Tool(mcpControlToolName, "Ping an MCP server, set its logging level, or complete a prompt/resource argument.", mcpControlSchema, b.controlTool)
 }
 
 func (b *bridge) server(name string) (*managedServer, ext.ToolResult, bool) {
@@ -180,6 +181,14 @@ func (b *bridge) resourcesTool(raw json.RawMessage) ext.ToolResult {
 		return res
 	}
 	switch in.Action {
+	case "subscribe", "unsubscribe":
+		if strings.TrimSpace(in.URI) == "" {
+			return ext.TextErrorResult(in.Action + " requires uri")
+		}
+		if err := srv.resourceSubscription(context.Background(), in.URI, in.Action == "subscribe"); err != nil {
+			return ext.TextErrorResult(err.Error())
+		}
+		return ext.TextResult(in.Action + " succeeded: " + in.URI + " (subscriptions end when the connection stops)")
 	case "list":
 		resources, templates, err := srv.listResources(context.Background())
 		if err != nil {
@@ -223,7 +232,7 @@ func (b *bridge) resourcesTool(raw json.RawMessage) ext.ToolResult {
 		}
 		return resourceContentsToZot(result.Contents)
 	default:
-		return ext.TextErrorResult("action must be list or read")
+		return ext.TextErrorResult("action must be list, read, subscribe or unsubscribe")
 	}
 }
 
@@ -290,8 +299,8 @@ func (b *bridge) promptsTool(raw json.RawMessage) ext.ToolResult {
 	}
 }
 
-// resourceContentsToZot renders text as text, images as images, other blobs as
-// a size note (the model cannot use raw binary).
+// resourceContentsToZot renders text and images natively and preserves other
+// binary content as base64 JSON with its URI and MIME type.
 func resourceContentsToZot(contents []*mcp.ResourceContents) ext.ToolResult {
 	var out []ext.ToolContent
 	for _, c := range contents {
@@ -301,7 +310,11 @@ func resourceContentsToZot(contents []*mcp.ResourceContents) ext.ToolResult {
 		case len(c.Blob) > 0 && strings.HasPrefix(c.MIMEType, "image/"):
 			out = append(out, ext.Image(c.MIMEType, base64.StdEncoding.EncodeToString(c.Blob)))
 		case len(c.Blob) > 0:
-			out = append(out, ext.Text(fmt.Sprintf("[%s: %d bytes of %s, binary omitted]", c.URI, len(c.Blob), c.MIMEType)))
+			data, err := json.Marshal(c)
+			if err != nil {
+				return ext.TextErrorResult("encode resource: " + err.Error())
+			}
+			out = append(out, ext.Text(string(data)))
 		}
 	}
 	if len(out) == 0 {

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,12 +101,14 @@ type oauthSession struct {
 	hc          *http.Client
 	interactive bool
 	showURL     func(string)
+	options     OAuthOptions
 
-	mu       sync.Mutex
-	listener net.Listener
-	server   *http.Server
-	redirect string
-	codes    chan callback
+	mu            sync.Mutex
+	listener      net.Listener
+	server        *http.Server
+	redirect      string
+	codes         chan callback
+	expectedState string
 }
 
 type callback struct{ code, state, iss string }
@@ -114,6 +117,19 @@ type callback struct{ code, state, iss string }
 // stored credentials and no interactive flow was requested: the plain request
 // then hits 401 and the caller reports LOGIN REQUIRED without any OAuth cost.
 func (s *managedServer) newOAuthSession(interactive bool, showURL func(string)) (*oauthSession, error) {
+	options := OAuthOptions{}
+	if s.config.OAuth != nil {
+		options = *s.config.OAuth
+	}
+	if options.Disabled {
+		if interactive {
+			return nil, errors.New("OAuth is disabled for this server")
+		}
+		return nil, nil
+	}
+	if err := options.validate(); err != nil {
+		return nil, err
+	}
 	store := oauthStoreFor(s.config.URL)
 	c, err := store.read()
 	if err != nil {
@@ -122,7 +138,7 @@ func (s *managedServer) newOAuthSession(interactive bool, showURL func(string)) 
 	if c.ClientID == "" && !interactive {
 		return nil, nil
 	}
-	return &oauthSession{store: store, resourceURL: s.config.URL, hc: oauthHTTPClient(), interactive: interactive, showURL: showURL}, nil
+	return &oauthSession{store: store, resourceURL: s.config.URL, hc: oauthHTTPClient(), interactive: interactive, showURL: showURL, options: options}, nil
 }
 
 // handler builds the go-sdk OAuthHandler for one connection.
@@ -162,10 +178,20 @@ func (o *oauthSession) handler() (auth.OAuthHandler, error) {
 			return ts, err
 		},
 	}
+	if o.options.Scope != "" {
+		cfg.ScopeFilter = func([]string) []string { return strings.Fields(o.options.Scope) }
+	}
+	// Explicit registration takes precedence; do not reuse tokens belonging to another client.
+	if o.options.ClientID != "" {
+		if stored.ClientID != o.options.ClientID || stored.ClientSecret != o.options.ClientSecret {
+			stored.Token = nil
+		}
+		stored.ClientID, stored.ClientSecret = o.options.ClientID, o.options.ClientSecret
+	}
 	// A stored registration is reused (go-sdk tries preregistered before DCR)
 	// unless this is a fresh interactive login: then a new public client is
 	// registered so a purged server-side registration cannot poison the flow.
-	if stored.ClientID != "" && !o.interactive {
+	if stored.ClientID != "" && (!o.interactive || o.options.ClientID != "") {
 		cfg.PreregisteredClient = &oauthex.ClientCredentials{ClientID: stored.ClientID}
 		if stored.ClientSecret != "" {
 			cfg.PreregisteredClient.ClientSecretAuth = &oauthex.ClientSecretAuth{ClientSecret: stored.ClientSecret}
@@ -178,7 +204,22 @@ func (o *oauthSession) handler() (auth.OAuthHandler, error) {
 		}
 		cfg.InitialTokenSource = ts
 	}
-	return auth.NewAuthorizationCodeHandler(cfg)
+	h, err := auth.NewAuthorizationCodeHandler(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !o.interactive {
+		return backgroundOAuth{h}, nil
+	}
+	return h, nil
+}
+
+// Reject challenges before discovery/registration when no explicit auth was requested.
+type backgroundOAuth struct{ auth.OAuthHandler }
+
+func (h backgroundOAuth) Authorize(_ context.Context, _ *http.Request, resp *http.Response) error {
+	resp.Body.Close()
+	return errAuthRequired
 }
 
 // listen starts the one-shot loopback callback server.
@@ -188,21 +229,46 @@ func (o *oauthSession) listen() error {
 	if o.listener != nil {
 		return nil
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	address, path := "127.0.0.1:0", "/callback"
+	if o.options.RedirectURI != "" {
+		u, err := url.Parse(o.options.RedirectURI)
+		if err != nil {
+			return err
+		}
+		address, path = u.Host, u.Path
+		if path == "" {
+			path = "/"
+		}
+	}
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
 	o.listener = ln
-	o.redirect = "http://" + ln.Addr().String() + "/callback"
+	o.redirect = (&url.URL{Scheme: "http", Host: ln.Addr().String(), Path: path}).String()
+	if o.options.RedirectURI != "" {
+		o.redirect = o.options.RedirectURI
+	}
 	o.codes = make(chan callback, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {
 			http.Error(w, "OAuth callback requires GET", http.StatusMethodNotAllowed)
 			return
 		}
 		q := r.URL.Query()
+		o.mu.Lock()
+		expected := o.expectedState
+		o.mu.Unlock()
+		if r.URL.Path != path || expected == "" || len(q["state"]) != 1 || q.Get("state") != expected {
+			http.Error(w, "OAuth state mismatch", http.StatusBadRequest)
+			return
+		}
+		if len(q["code"]) != 1 || q.Get("code") == "" {
+			http.Error(w, "Missing authorization code", http.StatusBadRequest)
+			return
+		}
 		select {
 		case o.codes <- callback{q.Get("code"), q.Get("state"), q.Get("iss")}:
 			fmt.Fprint(w, "Authorization received. Return to zot.")
@@ -239,6 +305,12 @@ func (o *oauthSession) fetchCode(ctx context.Context, args *auth.AuthorizationAr
 		return nil, errors.New("OAuth authorization endpoint must use HTTPS")
 	}
 	expectState := u.Query().Get("state")
+	if expectState == "" {
+		return nil, errors.New("OAuth authorization URL has no state")
+	}
+	o.mu.Lock()
+	o.expectedState = expectState
+	o.mu.Unlock()
 	o.showURL(args.URL)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -299,29 +371,44 @@ type persistingSource struct {
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	tok, err := p.inner.Token()
 	if err != nil {
-		// Stored credentials exist but cannot be turned into a token: purged
-		// registration, revoked grant, or unreachable AS. All need /mcp auth.
-		return nil, fmt.Errorf("%w (%v)", errAuthRequired, err)
+		var rejection *oauth2.RetrieveError
+		if errors.As(err, &rejection) {
+			switch rejection.ErrorCode {
+			case "invalid_grant", "invalid_client", "unauthorized_client":
+				return nil, errAuthRequired
+			}
+		}
+		// Network/server failures are not evidence that the user needs to log in.
+		return nil, errors.New("OAuth token refresh failed; check network and authorization server")
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if tok.AccessToken == p.last {
 		return tok, nil
 	}
-	p.last = tok.AccessToken
-	c, _ := p.store.read()
+	c, err := p.store.read()
+	if err != nil {
+		return nil, err
+	}
 	c.ClientID, c.ClientSecret, c.TokenEndpoint = p.cfg.ClientID, p.cfg.ClientSecret, p.cfg.Endpoint.TokenURL
 	c.Token = &oauthToken{AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, TokenType: tok.TokenType, ExpiresAt: tok.Expiry}
 	if !tok.Expiry.IsZero() {
 		c.Token.ExpiresIn = int64(time.Until(tok.Expiry).Seconds())
 	}
-	return tok, p.store.save(c)
+	if err := p.store.save(c); err != nil {
+		return nil, err
+	}
+	p.last = tok.AccessToken
+	return tok, nil
 }
 
 // login runs the explicit browser flow: connect with an interactive session,
 // which makes go-sdk register, open the browser, wait for the callback and
 // exchange the code. Credentials land in the store through persistingSource.
 func (s *managedServer) login(ctx context.Context, showURL func(string)) error {
+	if s.config.Disabled {
+		return fmt.Errorf("server %q is disabled", s.name)
+	}
 	if s.config.Transport != "streamable-http" && s.config.Transport != "sse" {
 		return errors.New("OAuth login requires an HTTP transport")
 	}

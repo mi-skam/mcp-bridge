@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ServerConfig describes one MCP server entry.
@@ -41,11 +42,26 @@ type ServerConfig struct {
 	ConnectTimeout int `json:"connectTimeout,omitempty"` // connection timeout (default: 30)
 	RequestTimeout int `json:"requestTimeout,omitempty"` // per-request timeout (default: 60)
 	IdleTimeout    int `json:"idleTimeout,omitempty"`    // idle timeout before stopping (default: 300)
-	// Millisecond aliases (zot-mcp compatibility); take precedence, rounded up to whole seconds.
+	// Millisecond aliases take precedence without rounding.
 	ConnectTimeoutMs int `json:"connectTimeoutMs,omitempty"`
 	RequestTimeoutMs int `json:"requestTimeoutMs,omitempty"`
 
-	Disabled bool `json:"disabled,omitempty"` // keep configured, never start
+	Disabled bool          `json:"disabled,omitempty"` // keep configured, never start
+	OAuth    *OAuthOptions `json:"oauth,omitempty"`
+}
+
+func (s ServerConfig) connectDuration() time.Duration {
+	if s.ConnectTimeoutMs > 0 {
+		return time.Duration(s.ConnectTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(s.ConnectTimeout) * time.Second
+}
+
+func (s ServerConfig) requestDuration() time.Duration {
+	if s.RequestTimeoutMs > 0 {
+		return time.Duration(s.RequestTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(s.RequestTimeout) * time.Second
 }
 
 // Config is the top-level MCP configuration.
@@ -96,9 +112,8 @@ func loadConfig(cwd string) (Config, error) {
 
 	var expansionErrors []error
 	for name, srv := range cfg.MCPServers {
-		// ponytail: disabled servers vanish from /mcp status; keep them listed when status grows a "disabled" state.
+		// Keep disabled entries visible; do not require their environment secrets.
 		if srv.Disabled {
-			delete(cfg.MCPServers, name)
 			continue
 		}
 		if err := expandServerEnv(&srv, cwd); err != nil {
@@ -160,6 +175,15 @@ func expandServerEnv(srv *ServerConfig, cwd string) error {
 	for k, value := range srv.Env {
 		srv.Env[k] = expand("env", value)
 	}
+	if srv.OAuth != nil {
+		srv.OAuth.RedirectURI = expand("oauth.redirectUri", srv.OAuth.RedirectURI)
+		srv.OAuth.ClientID = expand("oauth.clientId", srv.OAuth.ClientID)
+		srv.OAuth.ClientSecret = expand("oauth.clientSecret", srv.OAuth.ClientSecret)
+		srv.OAuth.Scope = expand("oauth.scope", srv.OAuth.Scope)
+		if err := srv.OAuth.validate(); err != nil {
+			missing = append(missing, err)
+		}
+	}
 	srv.URL = expand("url", srv.URL)
 	for k, value := range srv.Headers {
 		srv.Headers[k] = expand("headers", value)
@@ -193,7 +217,12 @@ func mergeConfig(cfg *Config, path string) error {
 		// Apply defaults
 		if srv.Transport == "" {
 			switch srv.Type {
-			case "", "stdio":
+			case "":
+				srv.Transport = "stdio"
+				if srv.URL != "" {
+					srv.Transport = "streamable-http"
+				}
+			case "stdio":
 				srv.Transport = "stdio"
 			case "http":
 				srv.Transport = "streamable-http"
@@ -203,11 +232,10 @@ func mergeConfig(cfg *Config, path string) error {
 				return fmt.Errorf("server %q: unsupported transport type", name)
 			}
 		}
-		if srv.ConnectTimeoutMs > 0 {
-			srv.ConnectTimeout, srv.ConnectTimeoutMs = (srv.ConnectTimeoutMs+999)/1000, 0
-		}
-		if srv.RequestTimeoutMs > 0 {
-			srv.RequestTimeout, srv.RequestTimeoutMs = (srv.RequestTimeoutMs+999)/1000, 0
+		for _, n := range []int{srv.ConnectTimeout, srv.RequestTimeout, srv.ConnectTimeoutMs, srv.RequestTimeoutMs} {
+			if n < 0 || int64(n) > int64((1<<63-1)/time.Second) {
+				return fmt.Errorf("server %q: timeout must be nonnegative and fit a time.Duration", name)
+			}
 		}
 		if srv.ConnectTimeout == 0 {
 			srv.ConnectTimeout = 30

@@ -195,7 +195,7 @@ func TestCachedMCPToolsAreDeferredWithOneActiveLoader(t *testing.T) {
 		}
 	}
 	// Active set is the fixed protocol surface only; never a per-MCP-tool schema.
-	wantActive := []string{mcpSearchToolName, mcpCallToolName, mcpDescribeToolName, mcpResourcesToolName, mcpPromptsToolName}
+	wantActive := []string{mcpSearchToolName, mcpCallToolName, mcpDescribeToolName, mcpResourcesToolName, mcpPromptsToolName, mcpControlToolName}
 	if !reflect.DeepEqual(active, wantActive) {
 		t.Fatalf("active tools = %v, want %v", active, wantActive)
 	}

@@ -170,6 +170,9 @@ func (b *bridge) registerCachedTools(cache toolCache) int {
 	b.registerToolSearch()
 	count := 0
 	for serverName, srv := range b.servers {
+		if srv.config.Disabled {
+			continue
+		}
 		cached, ok := cache.Servers[serverName]
 		if !ok || cached.Fingerprint != serverFingerprint(srv.config) {
 			continue
@@ -214,6 +217,9 @@ func (b *bridge) refreshToolCache(ctx context.Context, path string) (bool, error
 	var mu sync.Mutex
 
 	for name, srv := range b.servers {
+		if srv.config.Disabled {
+			continue
+		}
 		wg.Add(1)
 		go func(n string, s *managedServer) {
 			defer wg.Done()
@@ -517,8 +523,8 @@ func mcpResultToZot(result *mcp.CallToolResult) ext.ToolResult {
 			contents = append(contents, ext.Text(string(data)))
 		}
 	}
-	// Structured output without a text rendering: surface it as JSON.
-	if len(contents) == 0 && result.StructuredContent != nil {
+	// Preserve structured output even when the server also supplies content.
+	if result.StructuredContent != nil {
 		if data, err := json.Marshal(result.StructuredContent); err == nil {
 			contents = append(contents, ext.Text(string(data)))
 		}
@@ -541,6 +547,9 @@ func (b *bridge) startAll(ctx context.Context) error {
 	errCh := make(chan error, len(b.servers))
 
 	for name, srv := range b.servers {
+		if srv.config.Disabled {
+			continue
+		}
 		wg.Add(1)
 		go func(n string, s *managedServer) {
 			defer wg.Done()
