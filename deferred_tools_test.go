@@ -194,8 +194,10 @@ func TestCachedMCPToolsAreDeferredWithOneActiveLoader(t *testing.T) {
 			t.Errorf("cached MCP tool %q was not registered as deferred", name)
 		}
 	}
-	if !reflect.DeepEqual(active, []string{mcpSearchToolName}) {
-		t.Fatalf("active tools = %v, want only %s", active, mcpSearchToolName)
+	// Active set is the fixed protocol surface only; never a per-MCP-tool schema.
+	wantActive := []string{mcpSearchToolName, mcpCallToolName, mcpDescribeToolName, mcpResourcesToolName, mcpPromptsToolName}
+	if !reflect.DeepEqual(active, wantActive) {
+		t.Fatalf("active tools = %v, want %v", active, wantActive)
 	}
 }
 
@@ -208,7 +210,7 @@ func TestMCPToolSearchMatchesNameAndDescriptionDeterministically(t *testing.T) {
 
 	loader := ""
 	for _, registration := range registrations {
-		if !registration.Deferred {
+		if !registration.Deferred && registration.Name == mcpSearchToolName {
 			loader = registration.Name
 		}
 	}
@@ -246,7 +248,7 @@ func TestMCPToolSearchEmptyAndNoMatchAreSafe(t *testing.T) {
 
 	loader := ""
 	for _, registration := range registrations {
-		if !registration.Deferred {
+		if !registration.Deferred && registration.Name == mcpSearchToolName {
 			loader = registration.Name
 		}
 	}

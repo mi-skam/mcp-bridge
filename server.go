@@ -70,6 +70,11 @@ type managedServer struct {
 	gen         uint64   // bumped by stop(); a start attempt only commits if unchanged
 	loginActive bool     // one interactive OAuth flow at a time
 	loggedOut   bool     // credentials removed via /mcp logout; cleared by a successful start
+
+	// events receives server-initiated notifications for the user. nil = drop.
+	events func(level, message string)
+	// onToolsChanged runs when the server announces tools/list_changed.
+	onToolsChanged func(server string)
 }
 
 // markLoggedOut records an explicit credential removal so status can say so
@@ -195,7 +200,7 @@ func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.C
 		return nil, nil, err
 	}
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-bridge", Version: version}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-bridge", Version: version}, s.clientOptions())
 	if s.cwd != "" {
 		client.AddRoots(&mcp.Root{URI: "file://" + s.cwd, Name: "project"})
 	}
@@ -225,6 +230,47 @@ func (s *managedServer) connect(ctx context.Context, sess *oauthSession) (*mcp.C
 		cursor = res.NextCursor
 	}
 	return cs, tools, nil
+}
+
+// clientOptions wires server-initiated notifications. Logging at warning and
+// above reaches the user; everything else goes to the extension log.
+func (s *managedServer) clientOptions() *mcp.ClientOptions {
+	return &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			s.recordEventLocked("TOOLS CHANGED (server notification)")
+			if s.onToolsChanged != nil {
+				go s.onToolsChanged(s.name)
+			}
+		},
+		LoggingMessageHandler: func(_ context.Context, r *mcp.LoggingMessageRequest) {
+			msg := fmt.Sprint(r.Params.Data)
+			if b, err := json.Marshal(r.Params.Data); err == nil {
+				msg = string(b)
+			}
+			s.logger.Printf("[%s:%s] %s", s.name, r.Params.Level, msg)
+			if s.events == nil {
+				return
+			}
+			switch r.Params.Level {
+			case "warning":
+				s.events("warn", fmt.Sprintf("%s: %s", s.name, firstLine(msg)))
+			case "error", "critical", "alert", "emergency":
+				s.events("error", fmt.Sprintf("%s: %s", s.name, firstLine(msg)))
+			}
+		},
+		ResourceUpdatedHandler: func(_ context.Context, r *mcp.ResourceUpdatedNotificationRequest) {
+			s.recordEventLocked("RESOURCE UPDATED " + r.Params.URI)
+			if s.events != nil {
+				s.events("info", fmt.Sprintf("%s: resource updated %s", s.name, r.Params.URI))
+			}
+		},
+	}
+}
+
+func (s *managedServer) recordEventLocked(message string) {
+	s.mu.Lock()
+	s.recordEvent(message)
+	s.mu.Unlock()
 }
 
 // stdioTransport spawns the server process. It runs from the zot session's
@@ -366,50 +412,150 @@ func (s *managedServer) stop() {
 	}
 }
 
-// callTool forwards a tool call to the MCP server.
-// If the server is not running, it starts it first.
-func (s *managedServer) callTool(ctx context.Context, toolName string, args json.RawMessage) (*mcp.CallToolResult, error) {
+// withSession runs fn against a ready session, starting the server first if
+// needed, under the configured request timeout. It is the single entry point
+// for every MCP request the bridge forwards.
+func (s *managedServer) withSession(ctx context.Context, fn func(context.Context, *mcp.ClientSession) error) error {
 	s.mu.Lock()
 	c := s.client
 	st := s.state
 	s.mu.Unlock()
 
-	// If not ready, start the server
 	if st != stateReady || c == nil {
 		if err := s.start(ctx); err != nil {
-			return nil, err
+			return err
 		}
 		s.mu.Lock()
 		c = s.client
 		s.mu.Unlock()
 		if c == nil {
-			return nil, fmt.Errorf("[%s] stopped before the call could run", s.name)
+			return fmt.Errorf("[%s] stopped before the call could run", s.name)
 		}
 	}
 
-	// Parse args into map[string]any
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.config.RequestTimeout)*time.Second)
+	defer cancel()
+	if err := fn(callCtx, c); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.lastUsed = time.Now()
+	s.mu.Unlock()
+	return nil
+}
+
+// callTool forwards a tool call to the MCP server.
+func (s *managedServer) callTool(ctx context.Context, toolName string, args json.RawMessage) (*mcp.CallToolResult, error) {
 	var argsMap map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argsMap); err != nil {
 			return nil, fmt.Errorf("invalid args: %w", err)
 		}
 	}
+	var result *mcp.CallToolResult
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) (err error) {
+		result, err = c.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: argsMap})
+		return err
+	})
+	return result, err
+}
 
-	// Call the tool
-	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.config.RequestTimeout)*time.Second)
-	defer cancel()
-
-	result, err := c.CallTool(callCtx, &mcp.CallToolParams{Name: toolName, Arguments: argsMap})
-	if err != nil {
-		return nil, err
+// liveTools returns the current tool list from a live session (not the cache).
+func (s *managedServer) liveTools(ctx context.Context) ([]*mcp.Tool, error) {
+	var tools []*mcp.Tool
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) error {
+		var cursor string
+		for {
+			res, err := c.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
+			if err != nil {
+				return err
+			}
+			tools = append(tools, res.Tools...)
+			if res.NextCursor == "" {
+				return nil
+			}
+			cursor = res.NextCursor
+		}
+	})
+	if err == nil {
+		s.mu.Lock()
+		s.tools = tools
+		s.mu.Unlock()
 	}
+	return tools, err
+}
 
-	// Update last-used time
-	s.mu.Lock()
-	s.lastUsed = time.Now()
-	s.mu.Unlock()
+// listResources returns concrete resources and templates. Servers without the
+// resources capability yield empty lists, not an error.
+func (s *managedServer) listResources(ctx context.Context) ([]*mcp.Resource, []*mcp.ResourceTemplate, error) {
+	var res []*mcp.Resource
+	var tpl []*mcp.ResourceTemplate
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) error {
+		if caps := c.InitializeResult().Capabilities; caps == nil || caps.Resources == nil {
+			return nil
+		}
+		for cursor := ""; ; {
+			r, err := c.ListResources(ctx, &mcp.ListResourcesParams{Cursor: cursor})
+			if err != nil {
+				return err
+			}
+			res = append(res, r.Resources...)
+			if cursor = r.NextCursor; cursor == "" {
+				break
+			}
+		}
+		for cursor := ""; ; {
+			r, err := c.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{Cursor: cursor})
+			if err != nil {
+				return err
+			}
+			tpl = append(tpl, r.ResourceTemplates...)
+			if cursor = r.NextCursor; cursor == "" {
+				break
+			}
+		}
+		return nil
+	})
+	return res, tpl, err
+}
 
-	return result, nil
+func (s *managedServer) readResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
+	var out *mcp.ReadResourceResult
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) (err error) {
+		out, err = c.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		return err
+	})
+	return out, err
+}
+
+// listPrompts returns the prompt catalogue; empty for servers without the capability.
+func (s *managedServer) listPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
+	var out []*mcp.Prompt
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) error {
+		if caps := c.InitializeResult().Capabilities; caps == nil || caps.Prompts == nil {
+			return nil
+		}
+		for cursor := ""; ; {
+			r, err := c.ListPrompts(ctx, &mcp.ListPromptsParams{Cursor: cursor})
+			if err != nil {
+				return err
+			}
+			out = append(out, r.Prompts...)
+			if cursor = r.NextCursor; cursor == "" {
+				return nil
+			}
+		}
+	})
+	return out, err
+}
+
+func (s *managedServer) getPrompt(ctx context.Context, name string, args map[string]string) (*mcp.GetPromptResult, error) {
+	var out *mcp.GetPromptResult
+	err := s.withSession(ctx, func(ctx context.Context, c *mcp.ClientSession) (err error) {
+		out, err = c.GetPrompt(ctx, &mcp.GetPromptParams{Name: name, Arguments: args})
+		return err
+	})
+	return out, err
 }
 
 // waitForReady blocks until the server is ready or the context

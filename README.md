@@ -7,7 +7,11 @@ This extension reads MCP server configurations from standard locations (same for
 ## Features
 
 - **Standard config format** — same JSON as Claude Desktop, Cursor, Cline
-- **On-demand tool discovery** — only `mcp__search_tools` is advertised initially; matching MCP schemas load when needed instead of bloating every model request
+- **On-demand tool discovery** — a fixed set of five small tools is always advertised; matching MCP schemas load when needed instead of bloating every model request
+- **Resources and prompts** — `mcp__resources` lists/reads resources and templates, `mcp__prompts` lists/renders prompt templates
+- **Live catalogue** — `mcp__call` and `mcp__describe` reach tools discovered after startup; `tools/list_changed` refreshes the cache automatically
+- **Server notifications** — MCP logging at warning and above, and resource-update notifications, surface as zot notifications
+- **Roots** — the zot working directory is announced as the project root
 - **Smart lazy loading** — cached definitions register as deferred tools at startup, servers wake for refresh or tool calls, then auto-sleep after idle time
 - **Auto-respawn** — calling a loaded tool on a sleeping server wakes it up automatically
 - **Multi-transport** — stdio, streamable-http, and SSE transports
@@ -216,21 +220,19 @@ it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 | `/mcp setup add <template> [--global\|--project] [--name <server-name>]` | Add a server from a template |
 | `/mcp help` | Command reference |
 
-## Tool Naming
+## Tool Exposure
 
-Tools are namespaced to avoid collisions with zot's built-in tools:
+The model always sees five fixed tools; everything else is deferred and loaded on demand.
 
-```
-mcp__<server>__<tool>
-```
+| Tool | Purpose |
+|---|---|
+| `mcp__search_tools {query, limit}` | Search cached MCP tool names/descriptions and activate the matching deferred definitions |
+| `mcp__call {server, tool, args}` | Call any tool by server and MCP tool name, including tools discovered after startup |
+| `mcp__describe {server, tool?}` | Live tool list of a server, or one tool's input/output schema and annotations |
+| `mcp__resources {server, action: list\|read, uri?}` | Resources and URI templates; text as text, images as images |
+| `mcp__prompts {server, action: list\|get, name?, args?}` | Prompt templates and rendered messages |
 
-Examples:
-- `mcp__filesystem__read_file`
-- `mcp__filesystem__write_file`
-- `mcp__sqlite__query`
-- `mcp__context7__resolve-library-id`
-
-Server and tool names are sanitized (non-alphanumeric characters become `_`).
+Deferred tools are namespaced `mcp__<server>__<tool>` (non-alphanumerics become `_`), e.g. `mcp__filesystem__read_file`. Once activated by `mcp__search_tools` they are called natively with their real schema, which is why the bridge keeps them alongside the generic `mcp__call`.
 
 ## Smart Lazy Loading
 
@@ -269,7 +271,8 @@ zot ext logs mcp-bridge -f
 ## Limitations
 
 - **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Remote/headless callback forwarding is not supported. Static header authentication remains available.
-- **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
+- **No sampling/elicitation** — zot's extension protocol has no host API for nested model requests or user dialogs, so these server-to-client requests are not advertised
+- **No completion/subscriptions** — argument completion and resource subscriptions are not exposed; add on demand
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
 ## Development

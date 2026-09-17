@@ -122,7 +122,24 @@ func toolName(serverName, mcpToolName string) string {
 func (b *bridge) loadServers(cfg Config) {
 	for name, srvCfg := range cfg.MCPServers {
 		srv := newManagedServer(name, srvCfg, b.cwd, b.logger)
+		srv.events = b.e.Notify
+		srv.onToolsChanged = b.toolsChanged
 		b.servers[name] = srv
+	}
+}
+
+// toolsChanged handles a tools/list_changed notification: re-discover, update
+// the cache, and tell the user when a /reload-ext would surface new schemas.
+// mcp__call works immediately either way.
+func (b *bridge) toolsChanged(server string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	changed, err := b.refreshToolCache(ctx, toolCachePath())
+	if err != nil {
+		b.logger.Printf("[%s] refresh after tools/list_changed: %v", server, err)
+	}
+	if changed {
+		b.e.Notify("info", fmt.Sprintf("%s changed its tool list. Run /reload-ext to load the new definitions; mcp__call works now.", server))
 	}
 }
 
@@ -144,6 +161,7 @@ func (b *bridge) registerToolSearch() {
 		mcpSearchToolSchema,
 		b.searchTools,
 	)
+	b.registerProtocolTools()
 }
 
 // registerCachedTools registers previously discovered tool definitions without
