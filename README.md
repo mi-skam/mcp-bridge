@@ -73,65 +73,6 @@ Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Built on the official `modelc
 
 The model initially sees one small loader tool, `mcp__search_tools`. It searches cached MCP tool names and descriptions locally, activates up to eight relevant definitions by default, and then calls the selected MCP tool normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
 
-### Phone pairing with Build Remote Agent
-
-[Build Remote Agent](https://grokbuildremote.com/) is an optional, third-party integration that lets a paired phone observe terminal sessions and veto actions. It is an independent Linespotting AB product and is not affiliated with xAI or SpaceX.
-
-#### Install the agent
-
-Pin release `v0.6.0` and verify the binary against the checksum listed here. The release's own `SHA256SUMS` file does not currently match five of its six binary assets, so do not use that file as the trust source. These checksums were verified directly against the release assets on 2026-08-24:
-
-```text
-62673a6856342a87d4a2a659bc1de92200aa19a5b60d88d252254940820f0b7f  gbr-agent-darwin-amd64
-7baa1a8e214cd71b60e3f2b5063713e00ff740939749c3cab3d702784a1432f8  gbr-agent-darwin-arm64
-fb54724367882497f2e8e05e40ecdeb4be29e008e6c865fc5c426cf464e6ad6e  gbr-agent-linux-amd64
-9e9d7ca45bb0c4ded9d04226136013e9b64ae30f16bcf03069d35e9c38171cb9  gbr-agent-linux-arm64
-40355b2be6cd68f3be68f2a06dfd30307ec1a60f16f87f1d6174012b35aa4a49  gbr-agent-windows-amd64.exe
-8fb9efcbc7e2ac91c11964944bf0f45e31bb23f4356d9dcb4b305d7cb9b0fe8c  gbr-agent-windows-arm64.exe
-```
-
-This macOS Apple Silicon example downloads, verifies, and installs the binary. Change both `ASSET` and `SHA` for another platform.
-
-```bash
-VER=v0.6.0
-ASSET=gbr-agent-darwin-arm64
-SHA=7baa1a8e214cd71b60e3f2b5063713e00ff740939749c3cab3d702784a1432f8
-BASE="https://github.com/LinespottingOrg/GrokBuildRemote-Agents/releases/download/$VER"
-curl -fsSL -o "$ASSET" "$BASE/$ASSET"
-if command -v sha256sum >/dev/null 2>&1; then
-  printf '%s  %s\n' "$SHA" "$ASSET" | sha256sum -c -
-else
-  printf '%s  %s\n' "$SHA" "$ASSET" | shasum -a 256 -c -
-fi
-mkdir -p "$HOME/.local/bin"
-install -m 0755 "$ASSET" "$HOME/.local/bin/gbr-agent"
-export PATH="$HOME/.local/bin:$PATH"
-gbr-agent version  # must report v0.6.0
-gbr-agent pair
-gbr-agent run
-```
-
-Keep `gbr-agent run` running. Its Bot API should only be available over loopback:
-
-```bash
-curl -sS http://127.0.0.1:8788/health
-curl -sS http://127.0.0.1:8788/v1/sessions
-```
-
-#### Install the MCP server
-
-The MCP server requires Node.js 20 or newer. Pin its source instead of cloning the mutable default branch:
-
-```bash
-git clone --branch v0.6.0 --depth 1 https://github.com/LinespottingOrg/GrokBuildRemote-Agents.git
-cd GrokBuildRemote-Agents/mcp/gbr-mcp
-npm install --ignore-scripts
-MCP_PATH="$(pwd)/bin/gbr-mcp.js"
-node "$MCP_PATH" --diagnose
-```
-
-The `v0.6.0` source does not include a package lock, so its npm dependency resolution is not fully reproducible. Review the package manifest and resolved dependency tree before use. Put the absolute value of `MCP_PATH` in the configuration below. Never put mailbox keys in `mcp.json`.
-
 ## Configuration
 
 Config files are merged in this order; a later file replaces a same-named server entirely:
@@ -146,43 +87,43 @@ Config files are merged in this order; a later file replaces a same-named server
 
 ### Config Format
 
-Standard MCP config — same as Claude Desktop, with zot-specific extensions:
+Standard MCP config — same as Claude Desktop and Claude Code, with a few optional extensions:
 
 ```jsonc
 {
   "mcpServers": {
-    // ── Stdio transport (local subprocess) ───────────────────────────────────
+    // stdio: local subprocess
     "filesystem": {
-      "command": "npx",                    // executable to spawn
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "env": {                             // extra environment variables
-        "NODE_ENV": "production"
-      },
-      "connectTimeout": 30,                // connection timeout (seconds)
-      "requestTimeout": 60,                // per-request timeout (seconds)
-      "idleTimeout": 300                   // idle timeout before stopping (seconds)
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": { "NODE_ENV": "production" },
+      "cwd": "~/projects",                  // optional; default: zot's working directory
+      "idleTimeout": 300                    // seconds before an unused server is stopped
     },
 
-    // Build Remote Agent (gbr/1). Pair with `gbr-agent pair`, then keep
-    // `gbr-agent run` running. Use an absolute path to the pinned MCP checkout.
-    "gbr": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/GrokBuildRemote-Agents/mcp/gbr-mcp/bin/gbr-mcp.js"]
+    // streamable-http with a static token ("type": "http" is the Claude Code alias)
+    "atlassian": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp/",
+      "headers": { "Authorization": "Bearer ${ATLASSIAN_TOKEN}" }
     },
 
-    // ── Streamable HTTP transport (modern HTTP) ─────────────────────────────
-    "supabase": {
+    // streamable-http with browser OAuth: no headers, run /mcp auth n8n once
+    "n8n": {
       "transport": "streamable-http",
-      "url": "https://mcp.supabase.com/mcp",
-      "headers": {                         // custom HTTP headers
-        "Authorization": "Bearer YOUR_TOKEN"
-      }
+      "url": "https://n8n.example.com/mcp-server/http",
+      "requestTimeout": 120
     },
 
-    // ── SSE transport (legacy HTTP) ─────────────────────────────────────────
-    "legacy-server": {
+    // legacy SSE
+    "legacy": {
       "transport": "sse",
       "url": "https://example.com/sse"
+    },
+
+    // kept in the file, never started
+    "experimental": {
+      "command": "node", "args": ["server.js"], "disabled": true
     }
   }
 }
@@ -197,51 +138,14 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
 | `env` | object | — | Extra environment variables |
 | `cwd` | string | project dir | Working directory for the subprocess; `~` and relative paths supported |
 | `disabled` | bool | false | Keep the entry but never start the server |
-| `transport` | string | "stdio" | Transport: "stdio", "streamable-http", or "sse" |
+| `transport` | string | "stdio" | "stdio", "streamable-http", or "sse" |
+| `type` | string | — | Claude Code alias: "stdio", "http" (= streamable-http), or "sse" |
 | `url` | string | — | Server URL (HTTP transports only) |
-| `headers` | object | — | Custom HTTP headers (HTTP transports only) |
+| `headers` | object | — | Static HTTP headers (HTTP transports only). Omit for OAuth servers and use `/mcp auth` |
 | `connectTimeout` | number | 30 | Connection timeout in seconds |
 | `requestTimeout` | number | 60 | Per-request timeout in seconds |
 | `idleTimeout` | number | 300 | Idle timeout before stopping in seconds |
 | `connectTimeoutMs`, `requestTimeoutMs` | number | — | Millisecond aliases (zot-mcp compatible); take precedence |
-
-### Example: Multiple Servers
-
-```jsonc
-{
-  "mcpServers": {
-    // Filesystem access (stdio)
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
-    },
-
-    // Grep.app - Search GitHub (streamable-http)
-    "grep": {
-      "transport": "streamable-http",
-      "url": "https://mcp.grep.app/"
-    },
-
-    // Database queries (stdio)
-    "sqlite": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sqlite", "test.db"]
-    },
-
-    // Documentation lookup (stdio)
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    },
-
-    // You.com web search (streamable-http, keyless)
-    "you": {
-      "transport": "streamable-http",
-      "url": "https://api.you.com/mcp?profile=free"
-    }
-  }
-}
-```
 
 ### You.com template
 
@@ -300,16 +204,17 @@ it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 
 | Command | Description |
 |---|---|
-| `/mcp` | Show status of all configured servers |
-| `/mcp help` | Show available MCP commands |
-| `/mcp <name>` | Show detailed status for one server |
-| `/mcp start <name>` | Manually start a server |
-| `/mcp stop <name>` | Manually stop a server |
+| `/mcp` | Status of all configured servers (last known, not a live check) |
+| `/mcp status <name>` | Details and recent lifecycle log for one server |
+| `/mcp start <name\|all>` | Start one server, or all |
+| `/mcp stop <name\|all>` | Stop one server, or all |
 | `/mcp restart` | Restart all servers |
-| `/mcp start all` | Manually start all servers |
-| `/mcp stop all` | Manually stop all servers |
-| `/mcp setup templates` | Show available setup templates |
-| `/mcp setup add <template> [--global|--project] [--name <server-name>]` | Add a server from a template |
+| `/mcp refresh` | Rediscover tools and update the cache |
+| `/mcp auth <name>` | Browser OAuth authorization (alias: `login`) |
+| `/mcp logout <name>` | Remove local OAuth credentials |
+| `/mcp setup templates` | List setup templates (`grep`, `context7`, `you`) |
+| `/mcp setup add <template> [--global\|--project] [--name <server-name>]` | Add a server from a template |
+| `/mcp help` | Command reference |
 
 ## Tool Naming
 
@@ -363,49 +268,27 @@ zot ext logs mcp-bridge -f
 
 ## Limitations
 
-- **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Pre-registered clients and remote/headless callback forwarding are not supported yet. Static header authentication remains available.
+- **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Remote/headless callback forwarding is not supported. Static header authentication remains available.
 - **No resources/prompts** — only tools are bridged (MCP resources and prompts coming later)
 - **No automatic config hot reload** — run `/reload-ext` after setup/config changes
 
 ## Development
 
+Source of truth: `https://git.miskam.xyz/mxm/mcp-bridge`. The monorepo `zot-extension` consumes it as a submodule at `extensions/mcp-bridge`. Work in a checkout outside `$ZOT_HOME/extensions/`; `make install` refuses to run from the installed copy or with unpushed commits, because `zot ext remove` deletes that directory.
+
 ```bash
-# Build
-cd extensions/mcp-bridge
-go build -o mcp-bridge .
-
-# Test
-go test ./...
-go vet ./...
-
-# Run without installing (for one zot session)
-zot --ext .
-
-# View logs
-zot ext logs mcp-bridge -f
+go vet ./... && go test ./...        # unit tests
+zot --ext .                          # run one zot session against this checkout
+make install                         # zot ext remove + zot ext install .
+zot ext logs mcp-bridge -f           # extension stderr
 ```
+
+`sdkcompare/` is a separate module that drives the official go-sdk and the former mcp-go dependency through one interface; see its README for the migration acceptance results.
+
+Release: bump `version.go` and `extension.json` (a test enforces they match), commit, `git tag -a v<version>`, `git push --tags`.
+
+Validated against: `@modelcontextprotocol/server-filesystem` (stdio), `@zereight/mcp-gitlab` (stdio), grep.app (streamable-http), Atlassian MCP behind static headers (streamable-http), n8n MCP with OAuth 2.1 (streamable-http).
 
 ## License
 
 MIT
-
-## Testing
-
-```bash
-go test ./...
-go vet ./...
-go build -o /tmp/mcp-bridge .
-```
-
-Tested MCP servers:
-
-| Server | Transport | Result |
-|---|---|---|
-| `@modelcontextprotocol/server-filesystem` | stdio | 14 tools registered; file operations and MCP errors handled correctly |
-| grep.app `https://mcp.grep.app/` | streamable-http | `searchGitHub` registered and successfully searched public GitHub code |
-
-Note: grep.app uses the root endpoint `/`. Streamable HTTP protocol headers are handled automatically by the bridge and should not be written to `mcp.json`.
-
-## What the paired phone sees
-
-Build Remote Agent exposes terminal windows on the machine. Its loopback `:8788` endpoint is a Bot API that returns JSON, not an MCP endpoint or terminal transcript. See the third-party's [current phone visibility documentation](https://github.com/LinespottingOrg/GrokBuildRemote-Agents/blob/main/docs/WHAT-THE-PHONE-SEES.md) for details.
