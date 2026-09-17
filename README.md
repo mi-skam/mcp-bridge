@@ -25,7 +25,7 @@ For an HTTP server requiring browser authorization, run `/mcp auth <server>` to 
 
 The command returns immediately; the result arrives as a notification once the browser round-trip completes, and the server reconnects on its own. Tokens and client registration are stored per exact resource URL under `$ZOT_HOME/mcp-oauth/`, using atomic writes and mode 0600 files (0700 directory on Unix). These files contain credentials: do not share or commit them. On Windows, protect the state directory with account-specific ACLs.
 
-`/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization and refresh against a real provider still need end-to-end validation.
+`/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization, re-authorization after a purged client registration and fresh registration were validated end-to-end against n8n's MCP OAuth server.
 
 ## Environment variables
 
