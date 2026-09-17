@@ -1,6 +1,6 @@
 {
   "name": "mcp-bridge",
-  "version": "2.0.0-pre.2",
+  "version": "2.0.0",
   "exec": "go",
   "args": ["run", "."],
   "language": "go",
