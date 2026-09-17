@@ -60,16 +60,16 @@ type managedServer struct {
 	cwd    string
 	logger *log.Logger
 
-	mu       sync.Mutex
-	state    serverState
-	client   *mcp.ClientSession
-	tools    []*mcp.Tool
-	lastUsed time.Time
-	startErr error
-	recent []string // bounded lifecycle log; excludes raw server output and credentials
-	gen      uint64 // bumped by stop(); a start attempt only commits if unchanged
-	loginActive bool // one interactive OAuth flow at a time
-	loggedOut   bool // credentials removed via /mcp logout; cleared by a successful start
+	mu          sync.Mutex
+	state       serverState
+	client      *mcp.ClientSession
+	tools       []*mcp.Tool
+	lastUsed    time.Time
+	startErr    error
+	recent      []string // bounded lifecycle log; excludes raw server output and credentials
+	gen         uint64   // bumped by stop(); a start attempt only commits if unchanged
+	loginActive bool     // one interactive OAuth flow at a time
+	loggedOut   bool     // credentials removed via /mcp logout; cleared by a successful start
 }
 
 // markLoggedOut records an explicit credential removal so status can say so
@@ -481,7 +481,9 @@ func (s *managedServer) status() string {
 // recordEvent requires s.mu to be held. Only bridge-generated safe messages go here.
 func (s *managedServer) recordEvent(message string) {
 	s.recent = append(s.recent, time.Now().Format("15:04:05")+" "+message)
-	if len(s.recent) > 8 { s.recent = s.recent[len(s.recent)-8:] }
+	if len(s.recent) > 8 {
+		s.recent = s.recent[len(s.recent)-8:]
+	}
 }
 
 // detailStatus returns a multi-line status for one server.
@@ -557,8 +559,12 @@ func (s *managedServer) detailStatus(registered int) string {
 		sb.WriteByte('\n')
 	}
 	sb.WriteString("\nRECENT LIFECYCLE LOG (this extension session)\n")
-	if len(recent) == 0 { sb.WriteString("  No events recorded yet.\n") }
-	for _, line := range recent { sb.WriteString("  "+line+"\n") }
+	if len(recent) == 0 {
+		sb.WriteString("  No events recorded yet.\n")
+	}
+	for _, line := range recent {
+		sb.WriteString("  " + line + "\n")
+	}
 	return strings.TrimRight(sb.String(), "\n")
 }
 

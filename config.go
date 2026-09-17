@@ -32,7 +32,7 @@ type ServerConfig struct {
 	Cwd     string            `json:"cwd,omitempty"`     // working dir; ~ and relative paths resolve against the project
 
 	// HTTP transport fields
-	Type string `json:"type,omitempty"` // Claude Code alias: stdio | http | sse
+	Type      string            `json:"type,omitempty"`      // Claude Code alias: stdio | http | sse
 	Transport string            `json:"transport,omitempty"` // "stdio" (default) | "streamable-http" | "sse"
 	URL       string            `json:"url,omitempty"`       // server URL for HTTP transports
 	Headers   map[string]string `json:"headers,omitempty"`   // custom HTTP headers
@@ -193,10 +193,14 @@ func mergeConfig(cfg *Config, path string) error {
 		// Apply defaults
 		if srv.Transport == "" {
 			switch srv.Type {
-			case "", "stdio": srv.Transport = "stdio"
-			case "http": srv.Transport = "streamable-http"
-			case "sse": srv.Transport = "sse"
-			default: return fmt.Errorf("server %q: unsupported transport type", name)
+			case "", "stdio":
+				srv.Transport = "stdio"
+			case "http":
+				srv.Transport = "streamable-http"
+			case "sse":
+				srv.Transport = "sse"
+			default:
+				return fmt.Errorf("server %q: unsupported transport type", name)
 			}
 		}
 		if srv.ConnectTimeoutMs > 0 {

@@ -160,14 +160,20 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			return ext.Noop()
 
 		case "status":
-			if len(parts) > 2 { return ext.Errorf("usage: /mcp status [server]") }
+			if len(parts) > 2 {
+				return ext.Errorf("usage: /mcp status [server]")
+			}
 			if len(parts) == 1 {
 				notifyText(e, "info", mcpOverview(b))
 				return ext.Noop()
 			}
-			if b == nil { return ext.Errorf("no servers configured") }
+			if b == nil {
+				return ext.Errorf("no servers configured")
+			}
 			srv, ok := b.servers[parts[1]]
-			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
+			if !ok {
+				return ext.Errorf("unknown server: %s", parts[1])
+			}
 			notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
 			return ext.Noop()
 
@@ -180,18 +186,26 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			return ext.Noop()
 
 		case "auth", "login", "logout":
-			if b == nil || len(parts) != 2 { return ext.Errorf("usage: /mcp %s <server>", parts[0]) }
+			if b == nil || len(parts) != 2 {
+				return ext.Errorf("usage: /mcp %s <server>", parts[0])
+			}
 			srv, ok := b.servers[parts[1]]
-			if !ok { return ext.Errorf("unknown server: %s", parts[1]) }
+			if !ok {
+				return ext.Errorf("unknown server: %s", parts[1])
+			}
 			if parts[0] == "logout" {
 				srv.stop()
-				if err := os.Remove(oauthStoreFor(srv.config.URL).path); err != nil && !os.IsNotExist(err) { return ext.Errorf("OAuth logout failed") }
+				if err := os.Remove(oauthStoreFor(srv.config.URL).path); err != nil && !os.IsNotExist(err) {
+					return ext.Errorf("OAuth logout failed")
+				}
 				srv.markLoggedOut()
 				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
 				return ext.Noop()
 			}
 			// The browser round-trip outlasts zot's command timeout; answer now, report via notify.
-			if !srv.beginLogin() { return ext.Errorf("an authorization for %s is already in progress", srv.name) }
+			if !srv.beginLogin() {
+				return ext.Errorf("an authorization for %s is already in progress", srv.name)
+			}
 			go func() {
 				defer srv.endLogin()
 				err := srv.login(context.Background(), func(u string) {
