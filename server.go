@@ -207,7 +207,9 @@ func (s *managedServer) startStdio() (*client.Client, error) {
 		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 			cmd := exec.CommandContext(ctx, command, args...)
 			cmd.Env = append(os.Environ(), env...)
-			if s.cwd != "" {
+			if s.config.Cwd != "" {
+				cmd.Dir = s.config.Cwd
+			} else if s.cwd != "" {
 				cmd.Dir = s.cwd
 			}
 			return cmd, nil

@@ -4,9 +4,7 @@
 // (same format as Claude Desktop, Cursor, etc.) and bridges their tools
 // into zot so the LLM can call them.
 //
-// Config locations:
-//   - Global:  $ZOT_HOME/mcp.json
-//   - Project: .zot/mcp.json
+// Config locations: see config.go.
 //
 // Smart lazy: servers are spawned on startup to discover tools, then
 // killed after 5 minutes of idle time. On the next tool call, they're
@@ -45,7 +43,7 @@ import (
 )
 
 func main() {
-	e := ext.New("mcp", "1.1.0")
+	e := ext.New("mcp", version)
 
 	// Logger writes to stderr (captured by zot into ext logs)
 	logger := log.New(os.Stderr, "[mcp-bridge] ", log.LstdFlags)

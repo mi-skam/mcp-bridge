@@ -29,7 +29,7 @@ After authorization, run `/mcp refresh`. Tokens and client registration are stor
 
 ## Environment variables
 
-Like [Claude Code](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json), the bridge expands `${VAR}` and `${VAR:-default}` in `command`, `args`, `env` values, `url`, and `headers` values. This is client configuration compatibility, not a requirement of the MCP protocol.
+Like [Claude Code](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json), the bridge expands `${VAR}`, `${VAR:-default}` and (zot-mcp style) `$env:VAR` in `command`, `args`, `cwd`, `env` values, `url`, and `headers` values. This is client configuration compatibility, not a requirement of the MCP protocol.
 
 ```json
 {"mcpServers":{"api":{"transport":"streamable-http","url":"${API_BASE_URL:-https://api.example.com}/mcp","headers":{"Authorization":"Bearer ${API_KEY}"}}}}
@@ -134,12 +134,15 @@ The `v0.6.0` source does not include a package lock, so its npm dependency resol
 
 ## Configuration
 
-Config files are loaded from two locations (project overrides global per-server):
+Config files are merged in this order; a later file replaces a same-named server entirely:
 
 | Location | Scope |
 |---|---|
-| `$ZOT_HOME/mcp.json` | Global (`$XDG_STATE_HOME/zot/mcp.json` when `XDG_STATE_HOME` is set) |
-| `.zot/mcp.json` | Project-level (in your project root) |
+| `$XDG_CONFIG_HOME/mcp/mcp.json` (default `~/.config/mcp/mcp.json`) | Shared across MCP clients (cross-client convention, all platforms) |
+| `~/.agents/mcp.json`, `~/.agents/mcp/mcp.json` | Shared across agents |
+| `$ZOT_HOME/mcp.json` | Global, platform-native (`~/Library/Application Support/zot` on macOS, `$XDG_STATE_HOME/zot` when set) |
+| `.mcp.json` | Project-level (Claude Code compatible) |
+| `.zot/mcp.json` | Project-level, zot-specific |
 
 ### Config Format
 
@@ -192,12 +195,15 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
 | `command` | string | — | Executable to spawn (stdio only) |
 | `args` | string[] | [] | Arguments for the command |
 | `env` | object | — | Extra environment variables |
+| `cwd` | string | project dir | Working directory for the subprocess; `~` and relative paths supported |
+| `disabled` | bool | false | Keep the entry but never start the server |
 | `transport` | string | "stdio" | Transport: "stdio", "streamable-http", or "sse" |
 | `url` | string | — | Server URL (HTTP transports only) |
 | `headers` | object | — | Custom HTTP headers (HTTP transports only) |
 | `connectTimeout` | number | 30 | Connection timeout in seconds |
 | `requestTimeout` | number | 60 | Per-request timeout in seconds |
 | `idleTimeout` | number | 300 | Idle timeout before stopping in seconds |
+| `connectTimeoutMs`, `requestTimeoutMs` | number | — | Millisecond aliases (zot-mcp compatible); take precedence |
 
 ### Example: Multiple Servers
 

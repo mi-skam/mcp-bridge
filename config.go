@@ -1,13 +1,14 @@
 // config.go — MCP server configuration loading.
 //
 // Reads standard MCP config files (same format as Claude Desktop, Cursor, etc.)
-// from three locations:
+// and merges them in this order; later files replace same-named servers:
 //
-//  1. Global:  $ZOT_HOME/mcp.json
-//  2. Project: .mcp.json          (in the current working directory)
-//  3. Zot-specific: .zot/mcp.json (overrides the project config)
-//
-// Project config overrides global config per-server (shallow merge).
+//  1. $XDG_CONFIG_HOME/mcp/mcp.json (default ~/.config/mcp/mcp.json)
+//  2. ~/.agents/mcp.json
+//  3. ~/.agents/mcp/mcp.json
+//  4. $ZOT_HOME/mcp.json
+//  5. .mcp.json      (in the current working directory)
+//  6. .zot/mcp.json  (overrides the project config)
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 )
 
 // ServerConfig describes one MCP server entry.
@@ -27,6 +29,7 @@ type ServerConfig struct {
 	Command string            `json:"command,omitempty"` // executable to spawn
 	Args    []string          `json:"args,omitempty"`    // arguments
 	Env     map[string]string `json:"env,omitempty"`     // extra env vars
+	Cwd     string            `json:"cwd,omitempty"`     // working dir; ~ and relative paths resolve against the project
 
 	// HTTP transport fields
 	Type string `json:"type,omitempty"` // Claude Code alias: stdio | http | sse
@@ -38,6 +41,11 @@ type ServerConfig struct {
 	ConnectTimeout int `json:"connectTimeout,omitempty"` // connection timeout (default: 30)
 	RequestTimeout int `json:"requestTimeout,omitempty"` // per-request timeout (default: 60)
 	IdleTimeout    int `json:"idleTimeout,omitempty"`    // idle timeout before stopping (default: 300)
+	// Millisecond aliases (zot-mcp compatibility); take precedence, rounded up to whole seconds.
+	ConnectTimeoutMs int `json:"connectTimeoutMs,omitempty"`
+	RequestTimeoutMs int `json:"requestTimeoutMs,omitempty"`
+
+	Disabled bool `json:"disabled,omitempty"` // keep configured, never start
 }
 
 // Config is the top-level MCP configuration.
@@ -70,10 +78,10 @@ func zotHome() string {
 func loadConfig(cwd string) (Config, error) {
 	cfg := Config{MCPServers: make(map[string]ServerConfig)}
 
-	// 1. Global config
-	globalPath := filepath.Join(zotHome(), "mcp.json")
-	if err := mergeConfig(&cfg, globalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return cfg, fmt.Errorf("global config %s: %w", globalPath, err)
+	for _, globalPath := range globalConfigPaths() {
+		if err := mergeConfig(&cfg, globalPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return cfg, fmt.Errorf("global config %s: %w", globalPath, err)
+		}
 	}
 
 	// Later files replace entire server entries, not individual fields.
@@ -88,7 +96,12 @@ func loadConfig(cwd string) (Config, error) {
 
 	var expansionErrors []error
 	for name, srv := range cfg.MCPServers {
-		if err := expandServerEnv(&srv); err != nil {
+		// ponytail: disabled servers vanish from /mcp status; keep them listed when status grows a "disabled" state.
+		if srv.Disabled {
+			delete(cfg.MCPServers, name)
+			continue
+		}
+		if err := expandServerEnv(&srv, cwd); err != nil {
 			delete(cfg.MCPServers, name)
 			expansionErrors = append(expansionErrors, fmt.Errorf("server %q: %w", name, err))
 			continue
@@ -98,26 +111,49 @@ func loadConfig(cwd string) (Config, error) {
 	return cfg, errors.Join(expansionErrors...)
 }
 
-// Expand only Claude Code's braced syntax, not shell expressions or bare $VAR.
-var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
+// globalConfigPaths lists user-wide config files, lowest precedence first.
+// ~/.config/mcp is a cross-client convention (zot-mcp and others hardcode it
+// on every OS), not the platform config dir; the platform-native zot location
+// is $ZOT_HOME/mcp.json.
+func globalConfigPaths() []string {
+	home, _ := os.UserHomeDir()
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	return []string{
+		filepath.Join(configHome, "mcp", "mcp.json"),
+		filepath.Join(home, ".agents", "mcp.json"),
+		filepath.Join(home, ".agents", "mcp", "mcp.json"),
+		filepath.Join(zotHome(), "mcp.json"),
+	}
+}
 
-func expandServerEnv(srv *ServerConfig) error {
+// Expand Claude Code's braced syntax and zot-mcp's `$env:NAME`, not shell
+// expressions or bare $VAR.
+var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}|\$env:([A-Za-z_][A-Za-z0-9_]*)`)
+
+func expandServerEnv(srv *ServerConfig, cwd string) error {
 	var missing []error
 	expand := func(field, value string) string {
 		return envReference.ReplaceAllStringFunc(value, func(ref string) string {
 			parts := envReference.FindStringSubmatch(ref)
-			if value, ok := os.LookupEnv(parts[1]); ok {
+			name := parts[1] + parts[4] // exactly one alternative matched
+			if value, ok := os.LookupEnv(name); ok {
 				return value
 			}
 			if parts[2] != "" {
 				return parts[3]
 			}
 			// Never include field values: they may contain credentials.
-			missing = append(missing, fmt.Errorf("%s: environment variable %s is not set", field, parts[1]))
+			missing = append(missing, fmt.Errorf("%s: environment variable %s is not set", field, name))
 			return ref
 		})
 	}
 	srv.Command = expand("command", srv.Command)
+	if srv.Cwd = expand("cwd", srv.Cwd); srv.Cwd != "" {
+		srv.Cwd = resolvePath(srv.Cwd, cwd)
+	}
 	for i, arg := range srv.Args {
 		srv.Args[i] = expand(fmt.Sprintf("args[%d]", i), arg)
 	}
@@ -129,6 +165,18 @@ func expandServerEnv(srv *ServerConfig) error {
 		srv.Headers[k] = expand("headers", value)
 	}
 	return errors.Join(missing...)
+}
+
+// resolvePath expands a leading ~ and anchors relative paths at base.
+func resolvePath(p, base string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, _ := os.UserHomeDir()
+		p = filepath.Join(home, p[1:])
+	}
+	if !filepath.IsAbs(p) && base != "" {
+		p = filepath.Join(base, p)
+	}
+	return p
 }
 
 // mergeConfig reads a JSON config file and merges its servers into cfg.
@@ -150,6 +198,12 @@ func mergeConfig(cfg *Config, path string) error {
 			case "sse": srv.Transport = "sse"
 			default: return fmt.Errorf("server %q: unsupported transport type", name)
 			}
+		}
+		if srv.ConnectTimeoutMs > 0 {
+			srv.ConnectTimeout, srv.ConnectTimeoutMs = (srv.ConnectTimeoutMs+999)/1000, 0
+		}
+		if srv.RequestTimeoutMs > 0 {
+			srv.RequestTimeout, srv.RequestTimeoutMs = (srv.RequestTimeoutMs+999)/1000, 0
 		}
 		if srv.ConnectTimeout == 0 {
 			srv.ConnectTimeout = 30
