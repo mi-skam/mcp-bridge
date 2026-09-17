@@ -186,6 +186,7 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			if parts[0] == "logout" {
 				srv.stop()
 				if err := os.Remove(oauthStoreFor(srv.config.URL).path); err != nil && !os.IsNotExist(err) { return ext.Errorf("OAuth logout failed") }
+				srv.markLoggedOut()
 				notifyText(e, "info", "Local OAuth credentials removed (server-side grant is not revoked).")
 				return ext.Noop()
 			}

@@ -48,3 +48,17 @@ func TestLoginSlotIsExclusive(t *testing.T) {
 		t.Fatal("auth start must appear in the lifecycle log")
 	}
 }
+
+func TestLogoutStatusIsNotSleeping(t *testing.T) {
+	s := &managedServer{name: "n8n", state: stateStopped, tools: []mcp.Tool{{Name: "a"}}}
+	if !strings.Contains(s.status(), "SLEEPING") {
+		t.Fatalf("precondition: %s", s.status())
+	}
+	s.markLoggedOut()
+	if got := s.status(); !strings.Contains(got, "NOT AUTHORIZED — /mcp auth n8n") {
+		t.Fatalf("after logout: %s", got)
+	}
+	if !strings.Contains(s.detailStatus(0), "LOGOUT") {
+		t.Fatal("logout must appear in the lifecycle log")
+	}
+}

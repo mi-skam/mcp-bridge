@@ -68,6 +68,16 @@ type managedServer struct {
 	recent []string // bounded lifecycle log; excludes raw server output and credentials
 	gen      uint64 // bumped by stop(); a start attempt only commits if unchanged
 	loginActive bool // one interactive OAuth flow at a time
+	loggedOut   bool // credentials removed via /mcp logout; cleared by a successful start
+}
+
+// markLoggedOut records an explicit credential removal so status can say so
+// before any start attempt fails.
+func (s *managedServer) markLoggedOut() {
+	s.mu.Lock()
+	s.loggedOut = true
+	s.recordEvent("LOGOUT: local credentials removed")
+	s.mu.Unlock()
 }
 
 // beginLogin claims the interactive OAuth slot; false when a flow is already running.
@@ -154,6 +164,7 @@ func (s *managedServer) finishStart(gen uint64, c *client.Client, tools []mcp.To
 	s.client = c
 	s.tools = tools
 	s.state = stateReady
+	s.loggedOut = false
 	s.recordEvent(fmt.Sprintf("READY: %d tools discovered", len(tools)))
 	s.lastUsed = time.Now()
 	s.logger.Printf("[%s] ready with %d tools", s.name, len(s.tools))
@@ -445,6 +456,9 @@ func (s *managedServer) status() string {
 		}
 		return fmt.Sprintf("%s: FAILED", s.name)
 	case stateStopped:
+		if s.loggedOut {
+			return fmt.Sprintf("%s: NOT AUTHORIZED — /mcp auth %s", s.name, s.name)
+		}
 		if len(s.tools) > 0 {
 			return fmt.Sprintf("%s: SLEEPING — %s cached, not a live check", s.name, toolCountText(len(s.tools)))
 		}
