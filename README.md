@@ -20,7 +20,7 @@ This extension reads MCP server configurations from standard locations (same for
 - **Tool annotations** — read-only, destructive, idempotent hints surfaced to LLM
 - **Configurable timeouts** — per-server connect, request, and idle timeouts
 - **Custom headers** — auth tokens and other headers for HTTP servers
-- **Slash commands** — `/mcp` to check status, start/stop/restart servers
+- **Slash commands** — `/mcp` for help, `/mcp status` to inspect servers, `/mcp install` to configure servers, and start/stop/restart commands
 - **Better error messages** — context-aware errors with actionable suggestions
 
 ## Interactive OAuth
@@ -31,7 +31,7 @@ The command returns immediately; the result arrives as a notification once the b
 
 `/mcp logout <server>` stops that connection and deletes its local credentials; it does not revoke the authorization grant at the provider. Servers sharing an exact URL share credentials. Browser authorization, re-authorization after a purged client registration and fresh registration were validated end-to-end against n8n's MCP OAuth server.
 
-### Per-server OAuth configuration (2.1 work in progress)
+### Per-server OAuth configuration
 
 `oauth` accepts `true`, `false`, or an object with `clientId`, `clientSecret`, `scope`, and `redirectUri`. Fields support environment expansion. Explicit `false` disables OAuth; omission retains the existing stored-credential and explicit `/mcp auth` behavior. Configured clients take precedence over saved registrations; incompatible saved tokens are not reused.
 
@@ -61,29 +61,42 @@ Requires [Go 1.25+](https://go.dev/dl/) on `PATH`. Built on the official `modelc
 
    From a checkout of the monorepo instead: `cd extensions/mcp-bridge && make`.
 
-2. **Create a project config file:**
+2. **Start zot and configure servers with slash commands:**
 
-   ```bash
-   mkdir -p .zot
-   cat > .zot/mcp.json << 'EOF'
-   {
-     "mcpServers": {
-       "filesystem": {
-         "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
-       },
-       "context7": {
-         "command": "npx",
-         "args": ["-y", "@upstash/context7-mcp@latest"]
-       }
-     }
-   }
-   EOF
+   ```text
+   /mcp install filesystem -- npx -y @modelcontextprotocol/server-filesystem "."
+   /mcp install context7 -- npx -y @upstash/context7-mcp@latest
+   /mcp install -t http grep https://mcp.grep.app/
    ```
 
-3. **Restart zot.** On first run the extension refreshes its tool cache in the background. When zot shows `MCP tool cache changed`, run `/reload-ext` once. Future launches register the cached MCP tools immediately as deferred definitions.
+   These commands write to `.zot/mcp.json` in the working directory by default. Use `--scope project` for shared `.mcp.json` configuration or `--scope user` for `$ZOT_HOME/mcp.json`. Stdio examples require Node.js/`npx` when the servers start; installation itself does not download, launch, or contact a server. See [Install a server](#install-a-server) for flags, quoting, and authentication.
 
-The model initially sees one small loader tool, `mcp__search_tools`. It searches cached MCP tool names and descriptions locally, activates up to eight relevant definitions by default, and then calls the selected MCP tool normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
+3. **Run `/reload-ext`.** The extension loads the configuration and refreshes its tool cache in the background. When zot shows `MCP tool cache changed`, run `/reload-ext` once more. Future launches register the cached MCP tools immediately as deferred definitions. Use `/mcp status` to inspect server states; bare `/mcp` shows help.
+
+The model initially sees six small bridge tools, including `mcp__search_tools`; server-specific tool schemas are deferred. The search tool searches cached MCP tool names and descriptions locally and activates up to eight relevant definitions by default, which the model can then call normally. This keeps large MCP installations compatible with providers that limit request or tool-schema size.
+
+## Migrating to 3.0
+
+**Breaking command change:** `/mcp setup` and its template commands have been removed. Use the generic `/mcp install [options] <name> <commandOrUrl> [args...]` instead; there is no template catalog or `add` subcommand.
+
+For example, replace the old command:
+
+```text
+/mcp setup add grep
+```
+
+with:
+
+```text
+/mcp install --scope user -t http grep https://mcp.grep.app/
+/reload-ext
+```
+
+The explicit `--scope user` preserves the old setup command's global destination. The new install command defaults to **local** (`.zot/mcp.json`); `--scope project` writes `.mcp.json`. Supply the executable or URL explicitly when replacing other template commands, and put subprocess flags after `--`.
+
+**Already configured servers need no reinstall.** Existing configuration and OAuth credentials are unchanged by the upgrade. Do not rerun install for existing entries: duplicate names in the target file are rejected. Browser authorization still uses `/mcp auth <name>`; OAuth install flags are not supported.
+
+See [CHANGELOG.md](CHANGELOG.md) for the 3.0.0 release notes.
 
 ## Configuration
 
@@ -159,12 +172,16 @@ Standard MCP config — same as Claude Desktop and Claude Code, with a few optio
 | `idleTimeout` | number | 300 | Idle timeout before stopping in seconds |
 | `connectTimeoutMs`, `requestTimeoutMs` | number | — | Millisecond aliases (zot-mcp compatible); take precedence |
 
-### You.com template
+### You.com
 
-`/mcp setup add you` registers the keyless You.com MCP profile
-(`you-search`). It needs no account or API key. To use the authenticated
-server and its additional tools, edit `$ZOT_HOME/mcp.json` after adding
-the template:
+Register the keyless You.com MCP profile (`you-search`), with no account or API key:
+
+```text
+/mcp install --scope user --transport http you "https://api.you.com/mcp?profile=free"
+```
+
+To use the authenticated server and its additional tools, edit
+`$ZOT_HOME/mcp.json` after installing the configuration:
 
 ```jsonc
 {
@@ -216,7 +233,8 @@ it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 
 | Command | Description |
 |---|---|
-| `/mcp` | Status of all configured servers (last known, not a live check) |
+| `/mcp` | Command reference |
+| `/mcp status` | Status of all configured servers (last known, not a live check) |
 | `/mcp status <name>` | Details and recent lifecycle log for one server |
 | `/mcp start <name\|all>` | Start one server, or all |
 | `/mcp stop <name\|all>` | Stop one server, or all |
@@ -224,9 +242,66 @@ it explicitly with the `?tools=` URL parameter or the `X-Allowed-Tools` header.
 | `/mcp refresh` | Rediscover tools and update the cache |
 | `/mcp auth <name>` | Browser OAuth authorization (alias: `login`) |
 | `/mcp logout <name>` | Remove local OAuth credentials |
-| `/mcp setup templates` | List setup templates (`grep`, `context7`, `you`) |
-| `/mcp setup add <template> [--global\|--project] [--name <server-name>]` | Add a server from a template |
+| `/mcp install --help` | Installation options and examples |
+| `/mcp install [options] <name> <commandOrUrl> [args...]` | Configure any stdio, HTTP, or SSE MCP server |
 | `/mcp help` | Command reference |
+
+### Install a server
+
+`/mcp install` uses the core `claude mcp add` argument model: supply a name and
+any executable or server URL. There is no built-in server catalog or template
+requirement, and no `setup` or `add` subcommand.
+
+```text
+/mcp install --transport http grep https://mcp.grep.app/
+/mcp install --transport sse events https://example.com/sse
+/mcp install docs -- npx -y @upstash/context7-mcp@latest
+/mcp install filesystem --scope project -- npx -y @modelcontextprotocol/server-filesystem "/path with spaces"
+/mcp install worker -e API_KEY=${API_KEY} -- npx my-mcp-server --some-flag
+/mcp install -t http api https://example.com/mcp -H "Authorization: Bearer ${API_TOKEN}"
+```
+
+| Option | Meaning |
+|---|---|
+| `-t`, `--transport <stdio\|http\|sse>` | Defaults to `stdio`; `http` maps to streamable HTTP (`streamable-http` is also accepted) |
+| `-e`, `--env KEY=value` | Stdio environment variable; repeat the flag for multiple variables |
+| `-H`, `--header "Name: value"` | HTTP/SSE header; repeat the flag for multiple headers |
+| `-s`, `--scope <local\|project\|user>` | Defaults to `local`; see paths below |
+| `--global`, `--project` | Aliases for `--scope user` and `--scope project` |
+| `--` | Stop parsing install options; pass the remaining executable/arguments verbatim |
+| `-h`, `--help` | Show help (also shown by bare `/mcp install`) |
+
+Options may appear before or after the name/target, but must precede `--`.
+Use `--` before the executable when it takes flags, so they are not interpreted
+as install options. Long options also accept `--option=value`.
+Single/double quotes and backslash escapes preserve spaces and empty arguments;
+no shell, glob expansion, variable expansion, or command substitution runs during
+installation. `${VAR}` / `${VAR:-default}` references are saved literally and
+expanded by the bridge when it loads configuration. Prefer references to literal
+secrets, especially in shared files or chat history.
+
+**Scopes use zot's existing configuration locations**, not Claude's private store:
+
+| Scope | File |
+|---|---|
+| `local` (default) | `<cwd>/.zot/mcp.json` |
+| `project` | `<cwd>/.mcp.json` |
+| `user` | `$ZOT_HOME/mcp.json` |
+
+`local` means zot-specific, **not automatically private or ignored by Git**.
+When names overlap, `.zot/mcp.json` takes precedence over `.mcp.json`, which takes
+precedence over the user file. Duplicate names in the target file are rejected;
+other server entries and unknown JSON fields (including top-level fields) are
+preserved. Config files are written atomically with private, owner-only permissions
+(mode 0600 on Unix).
+
+This installs **configuration**, not a downloaded executable. The install command
+starts no processes and makes no network requests. Run `/reload-ext` after installing. HTTP URLs need an explicit
+HTTP/SSE transport; stdio environment flags cannot be combined with HTTP headers.
+For browser OAuth use `/mcp auth <name>` after reload. Claude's OAuth installation
+flags (`--client-id`, `--client-secret`, `--callback-port`) are not implemented by
+this command; advanced OAuth settings remain available through `mcp.json`.
+The former `/mcp setup` command and preset-only install syntax have been removed.
 
 ## Tool Exposure
 
@@ -258,7 +333,7 @@ The bridge uses a "smart lazy" strategy:
 5. **On next tool call**: the server is respawned automatically (~1-3s delay)
 
 This gives you:
-- Cached tools visible to the LLM immediately
+- Cached tools available for local search immediately, with schemas loaded on demand
 - Fast tool calls when actively working
 - Memory freed when not using MCP tools
 - One manual `/reload-ext` only when tool definitions change
@@ -267,7 +342,7 @@ This gives you:
 
 **Check server status:**
 ```
-/mcp
+/mcp status
 ```
 
 **View extension logs:**
@@ -278,7 +353,7 @@ zot ext logs mcp-bridge -f
 **Common issues:**
 
 - **Server fails to start**: check that `command` exists in your PATH, or use absolute path
-- **Tool not found**: run `/mcp` to see if the server started successfully
+- **Tool not found**: run `/mcp status` to see if the server started successfully
 - **Slow first call**: server is respawning after idle timeout (normal)
 
 ## Limitations
@@ -286,7 +361,7 @@ zot ext logs mcp-bridge -f
 - **OAuth scope** — `/mcp auth <server>` supports HTTPS servers with dynamic public-client registration. Remote/headless callback forwarding is not supported. Static header authentication remains available.
 - **No sampling/elicitation** — zot's extension protocol has no host API for nested model requests or user dialogs, so these server-to-client requests are not advertised
 - **Parity validation in progress** — SSE authorization retry has a local HTTP test, not a full live SSE/browser acceptance run. Subscription continuity across reconnects is not implemented.
-- **No automatic config hot reload** — run `/reload-ext` after setup/config changes
+- **No automatic config hot reload** — run `/reload-ext` after install/config changes
 
 ## Binary releases
 
@@ -297,12 +372,12 @@ Forgejo Actions (`.forgejo/workflows/release.yml`) runs on new `v*` tags. GoRele
 - `mcp-bridge_<version>_darwin_arm64.tar.gz` — Apple Silicon macOS (unsigned, not notarized)
 - `checksums.txt` — SHA-256 hashes
 
-Each archive contains the executable, README, MIT license and an `extension.json` pointing at `./mcp-bridge`. The git manifest still uses `go run .`, so source installations remain compatible with current zot. The proposed [`binary` manifest block](https://github.com/patriceckhart/zot/discussions/183) is not enabled until zot supports downloading and verifying it.
+Each archive contains the executable, README, changelog, MIT license and an `extension.json` pointing at `./mcp-bridge`. The git manifest still uses `go run .`, so source installations remain compatible with current zot. The proposed [`binary` manifest block](https://github.com/patriceckhart/zot/discussions/183) is not enabled until zot supports downloading and verifying it.
 
 Download your archive and `checksums.txt` from the same release. In a new working directory, verify before extracting (replace the filename below with the downloaded asset):
 
 ```sh
-asset=mcp-bridge_VERSION_darwin_arm64.tar.gz
+asset=mcp-bridge_3.0.0_darwin_arm64.tar.gz
 # Select exactly this asset from the checksum file; fail if absent or duplicated.
 awk -v asset="$asset" '$2 == asset { print; n++ } END { if (n != 1) exit 1 }' checksums.txt > selected-checksum.txt &&
 shasum -a 256 -c selected-checksum.txt &&

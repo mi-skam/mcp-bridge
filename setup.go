@@ -5,168 +5,275 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"sync"
+	"unicode"
 )
 
-type serverTemplate struct {
-	Name        string
-	Description string
-	Config      func(cwd string) ServerConfig
+func installHelp() string {
+	return `mcp-bridge install
+
+Usage:
+  /mcp install [options] <name> <commandOrUrl> [args...]
+
+Install any MCP server configuration; no predefined server list is required.
+This writes configuration only. It does not download or start a server.
+
+Options:
+  -t, --transport <stdio|http|sse>  Transport (default: stdio)
+  -e, --env KEY=value             Environment variable for stdio (repeatable)
+  -H, --header "Name: value"      HTTP/SSE header (repeatable)
+  -s, --scope <local|project|user> Configuration scope (default: local)
+      --global                   Alias for --scope user
+      --project                  Alias for --scope project
+  -h, --help                     Show help
+
+Scopes:
+  local    <cwd>/.zot/mcp.json (zot-specific; not automatically private)
+  project  <cwd>/.mcp.json (shared MCP configuration)
+  user     $ZOT_HOME/mcp.json
+
+Examples:
+  /mcp install --transport http sentry https://mcp.sentry.dev/mcp
+  /mcp install --transport http api https://example.com/mcp -H "Authorization: Bearer ${API_TOKEN}"
+  /mcp install docs -- npx -y @upstash/context7-mcp@latest
+  /mcp install worker -e API_KEY=${API_KEY} -- npx my-mcp-server --some-flag
+  /mcp install --scope user filesystem -- npx -y @modelcontextprotocol/server-filesystem "/path with spaces"
+
+Quote values containing spaces. Use -- before the executable to pass its flags
+verbatim. Shell expansion and shell execution are not performed. Environment
+references such as ${API_KEY} are saved literally and resolved when config loads.
+Prefer references over literal secrets, especially in project files or chat.
+Run /reload-ext after installing; use /mcp auth <name> for browser OAuth.`
 }
 
-func setupTemplates() map[string]serverTemplate {
-	return map[string]serverTemplate{
-		"grep": {
-			Name:        "grep",
-			Description: "Search real-world code across public GitHub repositories via grep.app.",
-			Config: func(cwd string) ServerConfig {
-				return ServerConfig{
-					Transport: "streamable-http",
-					URL:       "https://mcp.grep.app/",
-				}
-			},
-		},
-		"filesystem": {
-			Name:        "filesystem",
-			Description: "Read/write files under the current project directory using the official filesystem MCP server.",
-			Config: func(cwd string) ServerConfig {
-				return ServerConfig{
-					Transport: "stdio",
-					Command:   "npx",
-					Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", cwd},
-				}
-			},
-		},
-		"context7": {
-			Name:        "context7",
-			Description: "Fetch up-to-date library documentation and examples via Context7.",
-			Config: func(cwd string) ServerConfig {
-				return ServerConfig{
-					Transport: "stdio",
-					Command:   "npx",
-					Args:      []string{"-y", "@upstash/context7-mcp@latest"},
-				}
-			},
-		},
-		"playwright": {
-			Name:        "playwright",
-			Description: "Browser automation via Playwright MCP.",
-			Config: func(cwd string) ServerConfig {
-				return ServerConfig{
-					Transport: "stdio",
-					Command:   "npx",
-					Args:      []string{"-y", "@executeautomation/playwright-mcp-server"},
-				}
-			},
-		},
-		"you": {
-			Name:        "you",
-			Description: "Current web search via the keyless You.com MCP server (you-search). Add an Authorization Bearer header with a YDC_API_KEY for additional authenticated tools.",
-			Config: func(cwd string) ServerConfig {
-				return ServerConfig{
-					Transport: "streamable-http",
-					URL:       "https://api.you.com/mcp?profile=free",
-				}
-			},
-		},
-	}
-}
-
-func setupHelp() string {
-	templates := setupTemplates()
-	names := make([]string, 0, len(templates))
-	for name := range templates {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var b strings.Builder
-	b.WriteString("mcp-bridge setup\n\n")
-	b.WriteString("Add a known MCP server template to your zot MCP config.\n\n")
-	b.WriteString("Usage:\n")
-	b.WriteString("  /mcp setup add <template> [--global|--project] [--name <server-name>]\n")
-	b.WriteString("  /mcp setup templates\n\n")
-	b.WriteString("Templates:\n")
-	for _, name := range names {
-		t := templates[name]
-		b.WriteString(fmt.Sprintf("  %-12s %s\n", t.Name, t.Description))
-	}
-	b.WriteString("\nExamples:\n")
-	b.WriteString("  /mcp setup add grep\n")
-	b.WriteString("  /mcp setup add filesystem --project\n")
-	b.WriteString("  /mcp setup add context7 --global --name docs\n")
-	b.WriteString("\nDefault target is global: $ZOT_HOME/mcp.json. Run /reload-ext after changes.\n")
-	return b.String()
-}
-
-func handleSetup(args []string, cwd string) (string, error) {
-	if len(args) == 0 || args[0] == "help" {
-		return setupHelp(), nil
-	}
-	if args[0] == "templates" || args[0] == "list" {
-		return setupHelp(), nil
-	}
-	if args[0] != "add" {
-		return "", fmt.Errorf("unknown setup command %q\n\n%s", args[0], setupHelp())
-	}
-	if len(args) < 2 {
-		return "", fmt.Errorf("usage: /mcp setup add <template> [--global|--project] [--name <server-name>]")
+func handleInstall(args []string, cwd string) (string, error) {
+	if len(args) == 0 || (len(args) == 1 && args[0] == "help") {
+		return installHelp(), nil
 	}
 
-	templateName := args[1]
-	templates := setupTemplates()
-	t, ok := templates[templateName]
-	if !ok {
-		return "", fmt.Errorf("unknown template %q\n\n%s", templateName, setupHelp())
-	}
-
-	target := "global"
-	serverName := templateName
-	for i := 2; i < len(args); i++ {
-		switch args[i] {
-		case "--global":
-			target = "global"
-		case "--project":
-			target = "project"
-		case "--name":
-			if i+1 >= len(args) {
-				return "", fmt.Errorf("--name requires a value")
-			}
-			serverName = args[i+1]
-			i++
-		default:
-			return "", fmt.Errorf("unknown setup option %q", args[i])
+	cfg := ServerConfig{Transport: "stdio"}
+	scope := "local"
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
 		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+		option, inline, hasInline := strings.Cut(arg, "=")
+		switch option {
+		case "--help", "-h":
+			if hasInline {
+				return "", fmt.Errorf("%s does not accept a value", option)
+			}
+			return installHelp(), nil
+		case "--global", "--project":
+			if hasInline {
+				return "", fmt.Errorf("%s does not accept a value", option)
+			}
+			if option == "--global" {
+				scope = "user"
+			} else {
+				scope = "project"
+			}
+			continue
+		case "--transport", "-t", "--scope", "-s", "--env", "-e", "--header", "-H":
+		default:
+			// Do not echo arbitrary input: a mistaken flag may contain a secret.
+			return "", fmt.Errorf("unknown install option; use /mcp install --help, or -- before the executable to pass subprocess flags")
+		}
+
+		value := inline
+		if !hasInline {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return "", fmt.Errorf("%s requires a value", option)
+			}
+			i++
+			value = args[i]
+		}
+		if value == "" {
+			return "", fmt.Errorf("%s requires a nonempty value", option)
+		}
+		switch option {
+		case "--transport", "-t":
+			switch value {
+			case "http", "streamable-http":
+				cfg.Transport = "streamable-http"
+			case "stdio", "sse":
+				cfg.Transport = value
+			default:
+				return "", fmt.Errorf("transport must be stdio, http, or sse")
+			}
+		case "--scope", "-s":
+			if value != "local" && value != "project" && value != "user" {
+				return "", fmt.Errorf("scope must be local, project, or user")
+			}
+			scope = value
+		case "--env", "-e":
+			key, val, ok := strings.Cut(value, "=")
+			if !ok || !validEnvName(key) || strings.ContainsRune(val, '\x00') {
+				return "", fmt.Errorf("%s requires KEY=value with a valid environment variable name", option)
+			}
+			if cfg.Env == nil {
+				cfg.Env = map[string]string{}
+			}
+			cfg.Env[key] = val
+		case "--header", "-H":
+			key, val, ok := strings.Cut(value, ":")
+			key = strings.TrimSpace(key)
+			if !ok || !validHeaderName(key) || !validHeaderValue(val) {
+				return "", fmt.Errorf("%s requires a valid HTTP header in 'Name: value' form", option)
+			}
+			if cfg.Headers == nil {
+				cfg.Headers = map[string]string{}
+			}
+			cfg.Headers[http.CanonicalHeaderKey(key)] = strings.TrimSpace(val)
+		}
+	}
+
+	if len(positional) < 2 {
+		return "", fmt.Errorf("usage: /mcp install [options] <name> <commandOrUrl> [args...]")
+	}
+	name, target := positional[0], positional[1]
+	if name == "" || strings.IndexFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return "", fmt.Errorf("server name must be nonempty and contain no whitespace or control characters")
+	}
+	if strings.TrimSpace(target) == "" || strings.ContainsRune(target, '\x00') {
+		return "", fmt.Errorf("server command or URL must be nonempty and contain no NUL bytes")
+	}
+	if cfg.Transport == "stdio" {
+		if len(cfg.Headers) != 0 {
+			return "", fmt.Errorf("--header requires --transport http or sse")
+		}
+		if strings.Contains(target, "://") {
+			return "", fmt.Errorf("a server URL requires --transport http or sse")
+		}
+		cfg.Command = target
+		cfg.Args = positional[2:]
+		for _, arg := range cfg.Args {
+			if strings.ContainsRune(arg, '\x00') {
+				return "", fmt.Errorf("subprocess arguments must not contain NUL bytes")
+			}
+		}
+	} else {
+		if len(cfg.Env) != 0 {
+			return "", fmt.Errorf("--env requires --transport stdio; use --header for HTTP authentication")
+		}
+		if len(positional) != 2 {
+			return "", fmt.Errorf("HTTP/SSE servers do not accept subprocess arguments")
+		}
+		u, err := url.Parse(target)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+			return "", fmt.Errorf("server URL must be an absolute HTTP(S) URL without embedded credentials or a fragment")
+		}
+		cfg.URL = target
 	}
 
 	path := filepath.Join(zotHome(), "mcp.json")
-	if target == "project" {
+	if scope != "user" {
 		if cwd == "" {
-			return "", fmt.Errorf("--project requires a working directory, but none is known")
+			return "", fmt.Errorf("%s scope requires a working directory; use --scope user for global configuration", scope)
 		}
-		path = filepath.Join(cwd, ".zot", "mcp.json")
+		if scope == "project" {
+			path = filepath.Join(cwd, ".mcp.json")
+		} else {
+			path = filepath.Join(cwd, ".zot", "mcp.json")
+		}
 	}
+	if err := installServerConfig(path, name, cfg); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Installed MCP server %q configuration to %s.\n\nRun /reload-ext to reload MCP tools.", name, path), nil
+}
 
-	cfg, err := readConfigFile(path)
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, c := range name {
+		if c != '_' && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && !strings.ContainsRune("!#$%&'*+-.^_`|~", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHeaderValue(value string) bool {
+	for _, c := range value {
+		if (c < 32 && c != '\t') || c == 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// The extension dispatches slash commands concurrently. Serialize local installs
+// so two commands cannot read the same snapshot and overwrite each other's entry.
+var installConfigMu sync.Mutex
+
+// installServerConfig preserves fields owned by other MCP clients rather than
+// round-tripping the shared file through our narrower Config type.
+func installServerConfig(path, name string, server ServerConfig) error {
+	installConfigMu.Lock()
+	defer installConfigMu.Unlock()
+
+	root := map[string]json.RawMessage{}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if len(strings.TrimSpace(string(data))) != 0 {
+		if err := json.Unmarshal(data, &root); err != nil || root == nil {
+			return fmt.Errorf("config %s must contain a JSON object", path)
+		}
+	}
+	servers := map[string]json.RawMessage{}
+	if raw, ok := root["mcpServers"]; ok {
+		if err := json.Unmarshal(raw, &servers); err != nil {
+			return fmt.Errorf("mcpServers in %s must be a JSON object", path)
+		}
+		if servers == nil {
+			servers = map[string]json.RawMessage{}
+		}
+	}
+	if _, exists := servers[name]; exists {
+		return fmt.Errorf("server %q already exists in %s", name, path)
+	}
+	encoded, err := json.Marshal(server)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if cfg.MCPServers == nil {
-		cfg.MCPServers = map[string]ServerConfig{}
+	servers[name] = encoded
+	root["mcpServers"], err = json.Marshal(servers)
+	if err != nil {
+		return err
 	}
-	if _, exists := cfg.MCPServers[serverName]; exists {
-		return "", fmt.Errorf("server %q already exists in %s", serverName, path)
+	data, err = json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
 	}
-
-	cfg.MCPServers[serverName] = t.Config(cwd)
-	if err := writeConfigFile(path, cfg); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Added MCP server %q from template %q to %s.\n\nRun /reload-ext to reload MCP tools.", serverName, templateName, path), nil
+	return writeFileAtomic(path, append(data, '\n'), 0o600)
 }
 
 func readConfigFile(path string) (Config, error) {

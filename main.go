@@ -14,7 +14,9 @@
 //
 // Slash commands:
 //
-//	/mcp              — show status of all configured servers
+//	/mcp              — show available commands
+//	/mcp status       — show status of all configured servers
+//	/mcp install [options] <name> <commandOrUrl> [args...] — configure a server
 //	/mcp start <name> — manually start a server
 //	/mcp stop <name>  — manually stop a server
 //	/mcp restart      — restart all servers
@@ -67,7 +69,7 @@ func main() {
 
 		if len(cfg.MCPServers) == 0 {
 			logger.Printf("no MCP servers configured")
-			// Still register commands so user can check status and run setup.
+			// Still register commands so user can check status and install servers.
 			registerCommands(e, nil)
 			return
 		}
@@ -144,10 +146,11 @@ func reportRefresh(e *ext.Extension, b *bridge, changed bool, err error) {
 // registerCommands sets up the /mcp slash commands.
 func registerCommands(e *ext.Extension, b *bridge) {
 	e.Command("mcp", "show MCP server status or manage servers", func(args string) ext.Response {
-		args = strings.TrimSpace(args)
-
-		// Parse subcommand
-		parts := strings.Fields(args)
+		// Preserve quoted headers, environment values, and subprocess arguments.
+		parts, err := splitCommandArgs(args)
+		if err != nil {
+			return ext.Errorf("%v", err)
+		}
 		if len(parts) == 0 {
 			// /mcp lists actions; status is a separate, read-only command.
 			notifyText(e, "info", mcpHelp(b))
@@ -177,8 +180,8 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
 			return ext.Noop()
 
-		case "setup":
-			out, err := handleSetup(parts[1:], e.Host().CWD)
+		case "install":
+			out, err := handleInstall(parts[1:], e.Host().CWD)
 			if err != nil {
 				return ext.Errorf("%v", err)
 			}
@@ -290,13 +293,15 @@ func mcpCommands() string {
 func mcpHelp(b *bridge) string {
 	var sb strings.Builder
 	sb.WriteString(mcpCommands())
-	sb.WriteString("\n\nSetup commands\n")
-	sb.WriteString("  /mcp setup templates                  List setup templates\n")
-	sb.WriteString("  /mcp setup add <template> [options]   Add a server template\n")
-	sb.WriteString("\nSetup options\n")
-	sb.WriteString("  --global                              Write to $ZOT_HOME/mcp.json (default)\n")
-	sb.WriteString("  --project                             Write to .zot/mcp.json\n")
-	sb.WriteString("  --name <server-name>                  Use a custom configured server name\n")
+	sb.WriteString("\n\nInstall servers\n")
+	sb.WriteString("  /mcp install [options] <name> <commandOrUrl> [args...]\n")
+	sb.WriteString("  /mcp install --help                   Options and examples\n")
+	sb.WriteString("\nInstall options\n")
+	sb.WriteString("  -t, --transport <stdio|http|sse>       Transport (default: stdio)\n")
+	sb.WriteString("  -e, --env KEY=value                   Stdio environment (repeatable)\n")
+	sb.WriteString("  -H, --header \"Name: value\"            HTTP/SSE header (repeatable)\n")
+	sb.WriteString("  -s, --scope <local|project|user>       Scope (default: local)\n")
+	sb.WriteString("  --                                    Pass remaining arguments verbatim\n")
 	return strings.TrimRight(sb.String(), "\n")
 }
 

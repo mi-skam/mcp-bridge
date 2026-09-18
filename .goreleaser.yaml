@@ -47,6 +47,7 @@ archives:
       - src: dist-extension.json
         dst: extension.json
       - README.md
+      - CHANGELOG.md
       - LICENSE
 
 checksum:
@@ -76,6 +77,9 @@ release:
   prerelease: auto
   header: |
     ## mcp-bridge {{ .Tag }}
+
+    See [CHANGELOG.md](https://git.miskam.xyz/mxm/mcp-bridge/src/tag/{{ .Tag }}/CHANGELOG.md)
+    for release highlights and migration instructions.
 
     Prebuilt extension binaries for zot. Until `zot ext install` resolves
     the `binary` manifest block itself, install manually:

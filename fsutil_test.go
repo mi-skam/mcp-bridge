@@ -79,17 +79,22 @@ func TestToolCacheVersionMismatchInvalidates(t *testing.T) {
 }
 
 func TestConfigFileWrittenOwnerOnly(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("ZOT_HOME", tmp)
-
-	if _, err := handleSetup([]string{"add", "grep"}, tmp); err != nil {
-		t.Fatalf("handleSetup: %v", err)
-	}
-	info, err := os.Stat(filepath.Join(tmp, "mcp.json"))
-	if err != nil {
-		t.Fatalf("stat mcp.json: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("mcp.json perm = %o, want 600 (may contain auth headers)", got)
+	for i, scope := range []string{"local", "project", "user"} {
+		t.Run(scope, func(t *testing.T) {
+			home, cwd := t.TempDir(), t.TempDir()
+			t.Setenv("ZOT_HOME", home)
+			args := []string{"--scope", scope, "--transport", "http", "remote", "https://example.com/mcp", "--header", "Authorization: Bearer secret"}
+			if _, err := handleInstall(args, cwd); err != nil {
+				t.Fatalf("handleInstall: %v", err)
+			}
+			path := installTestPaths(home, cwd)[i]
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat mcp.json: %v", err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("mcp.json perm = %o, want 600 (may contain auth headers)", got)
+			}
+		})
 	}
 }

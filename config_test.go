@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,9 +61,59 @@ func TestLoadConfigMissingFilesIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestHandleSetupProjectRequiresCwd(t *testing.T) {
-	t.Setenv("ZOT_HOME", t.TempDir())
-	if _, err := handleSetup([]string{"add", "grep", "--project"}, ""); err == nil {
-		t.Fatal("expected error for --project with unknown working directory")
+func TestHandleInstallLocalAndProjectRequireCwd(t *testing.T) {
+	for _, options := range [][]string{nil, {"--scope", "local"}, {"--scope", "project"}, {"--project"}} {
+		t.Run(strings.Join(options, " "), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("ZOT_HOME", home)
+			args := append(append([]string{}, options...), "server", "runner")
+			if _, err := handleInstall(args, ""); err == nil {
+				t.Fatalf("handleInstall(%q): expected error with unknown working directory", args)
+			}
+			if _, err := os.Stat(filepath.Join(home, "mcp.json")); !os.IsNotExist(err) {
+				t.Fatalf("missing cwd must not fall back to user scope: %v", err)
+			}
+		})
+	}
+}
+
+func TestHandleInstallUserDoesNotRequireCwd(t *testing.T) {
+	for _, options := range [][]string{{"--scope", "user"}, {"--global"}} {
+		t.Run(strings.Join(options, " "), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("ZOT_HOME", home)
+			args := append(append([]string{}, options...), "server", "runner")
+			if _, err := handleInstall(args, ""); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := readConfigFile(filepath.Join(home, "mcp.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.MCPServers["server"].Command != "runner" {
+				t.Fatalf("user install missing: %+v", cfg.MCPServers)
+			}
+		})
+	}
+}
+
+func TestHandleInstallMalformedConfigUnchanged(t *testing.T) {
+	for _, original := range []string{`{"mcpServers":`, `{"mcpServers":[]}`, `{"mcpServers":"invalid"}`, `[]`} {
+		t.Run(original, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Setenv("ZOT_HOME", t.TempDir())
+			path := filepath.Join(cwd, ".zot", "mcp.json")
+			writeJSON(t, path, original)
+			if _, err := handleInstall([]string{"server", "runner"}, cwd); err == nil {
+				t.Fatal("expected malformed config error")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != original {
+				t.Fatalf("malformed config was overwritten: %s", data)
+			}
+		})
 	}
 }
