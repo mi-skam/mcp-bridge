@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.0.0] - 2026-09-18
+
+### Breaking changes
+
+- `/mcp list` now shows the all-server overview previously displayed by bare `/mcp status`. `/mcp status <server>` requires exactly one server name; missing or extra arguments show usage. The existing `/mcp <server>` shortcut remains available; use `/mcp status list` for a server named `list`.
+
+### Changed
+
+- Help menus, documentation, and error hints now advertise bare `/mcp install` and `/mcp uninstall` for usage and examples, without requiring help flags.
+- The README is organized around installing, using, inspecting, and removing servers, with a command reference, update instructions, and troubleshooting.
+
+### Added
+
+- `/mcp uninstall [options] <name>` removes one server configuration using the same local/project/user scopes as install. Other entries and unknown JSON fields are preserved; missing entries and malformed files are left untouched.
+- Install and uninstall share scope resolution and serialized, atomic configuration writes. Removal requires `/reload-ext` to take effect and retains OAuth credentials, tool caches, and installed server packages.
+
+### Migration
+
+- Replace bare `/mcp status` with `/mcp list`; continue using `/mcp status <name>` for one server.
+- Remove test or unused server entries with `/mcp uninstall <name>`, selecting `--scope project` or `--scope user` when appropriate, then run `/reload-ext`.
+- Already configured servers and OAuth credentials need no migration or reinstall. Only the extension needs updating.
+
 ## [3.0.0] - 2026-09-18
 
 ### Breaking changes

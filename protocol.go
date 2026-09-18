@@ -28,7 +28,7 @@ const (
 var mcpCallSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "server": {"type": "string", "description": "Configured MCP server name, as listed by /mcp."},
+    "server": {"type": "string", "description": "Configured MCP server name, as listed by /mcp list."},
     "tool": {"type": "string", "description": "MCP tool name on that server (not the mcp__ prefixed zot name)."},
     "args": {"type": "object", "additionalProperties": true, "description": "Tool arguments matching the tool's input schema. Use mcp__describe to see it."}
   },

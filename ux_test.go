@@ -24,6 +24,50 @@ func TestMCPHelpAdvertisesInstall(t *testing.T) {
 	}
 }
 
+func TestMCPHelpAdvertisesUninstall(t *testing.T) {
+	help := mcpHelp(nil)
+	for _, line := range strings.Split(help, "\n") {
+		if strings.Contains(line, "/mcp uninstall") && strings.Contains(line, "<name>") {
+			return
+		}
+	}
+	t.Fatalf("help must advertise /mcp uninstall with a server name:\n%s", help)
+}
+
+func TestMCPHelpAdvertisesListAndRequiredStatusServer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		b    *bridge
+	}{
+		{"nil bridge", nil},
+		{"empty bridge", &bridge{servers: map[string]*managedServer{}}},
+		{"configured bridge", &bridge{servers: map[string]*managedServer{"test": {name: "test"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			help := mcpHelp(tc.b)
+			var list, status bool
+			for _, line := range strings.Split(help, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 2 || fields[0] != "/mcp" {
+					continue
+				}
+				switch fields[1] {
+				case "list":
+					list = true
+				case "status":
+					status = true
+					if len(fields) < 3 || fields[2] != "<server>" {
+						t.Errorf("status must require <server>, not advertise aggregate status: %q", line)
+					}
+				}
+			}
+			if !list || !status {
+				t.Errorf("menu must advertise /mcp list and /mcp status <server>:\n%s", help)
+			}
+		})
+	}
+}
+
 func TestMCPCommandsAndStatusSeparate(t *testing.T) {
 	if strings.Contains(mcpHelp(nil), "no servers configured") {
 		t.Fatal("help includes status")

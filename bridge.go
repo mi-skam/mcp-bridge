@@ -460,7 +460,7 @@ func (b *bridge) handleToolCall(zotName string, args json.RawMessage) ext.ToolRe
 	if !ok {
 		return ext.TextErrorResult(fmt.Sprintf(
 			"Tool '%s' not found. This tool was registered but is no longer available. "+
-				"The MCP server may have been stopped. Try running '/mcp' to check server status.",
+				"The MCP server may have been stopped. Try running '/mcp list' to check server states.",
 			zotName))
 	}
 
@@ -488,7 +488,7 @@ func (b *bridge) handleToolCall(zotName string, args json.RawMessage) ext.ToolRe
 		}
 		return ext.TextErrorResult(fmt.Sprintf(
 			"MCP tool call failed: %v. Server: %s, Tool: %s. "+
-				"Check '/mcp %s' for server status.",
+				"Check '/mcp status %s' for server status.",
 			err, mapping.serverName, mapping.mcpTool, mapping.serverName))
 	}
 

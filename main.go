@@ -15,7 +15,8 @@
 // Slash commands:
 //
 //	/mcp              — show available commands
-//	/mcp status       — show status of all configured servers
+//	/mcp list         — show status of all configured servers
+//	/mcp status <server> — show details for one server
 //	/mcp install [options] <name> <commandOrUrl> [args...] — configure a server
 //	/mcp start <name> — manually start a server
 //	/mcp stop <name>  — manually stop a server
@@ -162,26 +163,22 @@ func registerCommands(e *ext.Extension, b *bridge) {
 			notifyText(e, "info", mcpHelp(b))
 			return ext.Noop()
 
+		case "list":
+			return handleListCommand(e, b, parts[1:])
+
 		case "status":
-			if len(parts) > 2 {
-				return ext.Errorf("usage: /mcp status [server]")
-			}
-			if len(parts) == 1 {
-				notifyText(e, "info", mcpOverview(b))
-				return ext.Noop()
-			}
-			if b == nil {
-				return ext.Errorf("no servers configured")
-			}
-			srv, ok := b.servers[parts[1]]
-			if !ok {
-				return ext.Errorf("unknown server: %s", parts[1])
-			}
-			notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
-			return ext.Noop()
+			return handleStatusCommand(e, b, parts[1:])
 
 		case "install":
 			out, err := handleInstall(parts[1:], e.Host().CWD)
+			if err != nil {
+				return ext.Errorf("%v", err)
+			}
+			notifyText(e, "info", out)
+			return ext.Noop()
+
+		case "uninstall":
+			out, err := handleUninstall(parts[1:], e.Host().CWD)
 			if err != nil {
 				return ext.Errorf("%v", err)
 			}
@@ -259,6 +256,29 @@ func registerCommands(e *ext.Extension, b *bridge) {
 
 }
 
+func handleListCommand(e *ext.Extension, b *bridge, args []string) ext.Response {
+	if len(args) != 0 {
+		return ext.Errorf("usage: /mcp list")
+	}
+	notifyText(e, "info", mcpOverview(b))
+	return ext.Noop()
+}
+
+func handleStatusCommand(e *ext.Extension, b *bridge, args []string) ext.Response {
+	if len(args) != 1 || args[0] == "" {
+		return ext.Errorf("usage: /mcp status <server>")
+	}
+	if b == nil {
+		return ext.Errorf("no servers configured")
+	}
+	srv, ok := b.servers[args[0]]
+	if !ok {
+		return ext.Errorf("unknown server: %s", args[0])
+	}
+	notifyText(e, serverNotifyLevel(srv), srv.detailStatus(b.registeredToolCount(srv.name)))
+	return ext.Noop()
+}
+
 func mcpOverview(b *bridge) string {
 	var sb strings.Builder
 	sb.WriteString("MCP status (last known; not a live health check)\n")
@@ -277,7 +297,7 @@ func mcpOverview(b *bridge) string {
 func mcpCommands() string {
 	var sb strings.Builder
 	sb.WriteString("MCP COMMANDS\n\nInspect\n")
-	sb.WriteString("  /mcp status                          All server states\n")
+	sb.WriteString("  /mcp list                            All server states\n")
 	sb.WriteString("  /mcp status <server>                 Details and recent lifecycle log\n")
 	sb.WriteString("\nManage connections\n")
 	sb.WriteString("  /mcp start <server|all>               Start one server, or all servers\n")
@@ -293,9 +313,11 @@ func mcpCommands() string {
 func mcpHelp(b *bridge) string {
 	var sb strings.Builder
 	sb.WriteString(mcpCommands())
-	sb.WriteString("\n\nInstall servers\n")
+	sb.WriteString("\n\nConfigure servers\n")
 	sb.WriteString("  /mcp install [options] <name> <commandOrUrl> [args...]\n")
-	sb.WriteString("  /mcp install --help                   Options and examples\n")
+	sb.WriteString("  /mcp install                          Show install usage and examples\n")
+	sb.WriteString("  /mcp uninstall [options] <name>       Remove a server configuration\n")
+	sb.WriteString("  /mcp uninstall                        Show uninstall usage and scope\n")
 	sb.WriteString("\nInstall options\n")
 	sb.WriteString("  -t, --transport <stdio|http|sse>       Transport (default: stdio)\n")
 	sb.WriteString("  -e, --env KEY=value                   Stdio environment (repeatable)\n")

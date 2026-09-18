@@ -18,6 +18,7 @@ func installHelp() string {
 	return `mcp-bridge install
 
 Usage:
+  /mcp install                          Show this help
   /mcp install [options] <name> <commandOrUrl> [args...]
 
 Install any MCP server configuration; no predefined server list is required.
@@ -30,7 +31,6 @@ Options:
   -s, --scope <local|project|user> Configuration scope (default: local)
       --global                   Alias for --scope user
       --project                  Alias for --scope project
-  -h, --help                     Show help
 
 Scopes:
   local    <cwd>/.zot/mcp.json (zot-specific; not automatically private)
@@ -89,7 +89,7 @@ func handleInstall(args []string, cwd string) (string, error) {
 		case "--transport", "-t", "--scope", "-s", "--env", "-e", "--header", "-H":
 		default:
 			// Do not echo arbitrary input: a mistaken flag may contain a secret.
-			return "", fmt.Errorf("unknown install option; use /mcp install --help, or -- before the executable to pass subprocess flags")
+			return "", fmt.Errorf("unknown install option; run /mcp install for help, or use -- before the executable to pass subprocess flags")
 		}
 
 		value := inline
@@ -144,7 +144,7 @@ func handleInstall(args []string, cwd string) (string, error) {
 		return "", fmt.Errorf("usage: /mcp install [options] <name> <commandOrUrl> [args...]")
 	}
 	name, target := positional[0], positional[1]
-	if name == "" || strings.IndexFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+	if !validServerName(name) {
 		return "", fmt.Errorf("server name must be nonempty and contain no whitespace or control characters")
 	}
 	if strings.TrimSpace(target) == "" || strings.ContainsRune(target, '\x00') {
@@ -178,21 +178,38 @@ func handleInstall(args []string, cwd string) (string, error) {
 		cfg.URL = target
 	}
 
-	path := filepath.Join(zotHome(), "mcp.json")
-	if scope != "user" {
-		if cwd == "" {
-			return "", fmt.Errorf("%s scope requires a working directory; use --scope user for global configuration", scope)
-		}
-		if scope == "project" {
-			path = filepath.Join(cwd, ".mcp.json")
-		} else {
-			path = filepath.Join(cwd, ".zot", "mcp.json")
-		}
+	path, err := serverConfigPath(scope, cwd)
+	if err != nil {
+		return "", err
 	}
 	if err := installServerConfig(path, name, cfg); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Installed MCP server %q configuration to %s.\n\nRun /reload-ext to reload MCP tools.", name, path), nil
+}
+
+func validServerName(name string) bool {
+	return name != "" && strings.IndexFunc(name, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) < 0
+}
+
+// serverConfigPath keeps install and uninstall scope resolution identical.
+func serverConfigPath(scope, cwd string) (string, error) {
+	switch scope {
+	case "user":
+		return filepath.Join(zotHome(), "mcp.json"), nil
+	case "local", "project":
+		if cwd == "" {
+			return "", fmt.Errorf("%s scope requires a working directory; use --scope user for global configuration", scope)
+		}
+		if scope == "project" {
+			return filepath.Join(cwd, ".mcp.json"), nil
+		}
+		return filepath.Join(cwd, ".zot", "mcp.json"), nil
+	default:
+		return "", fmt.Errorf("scope must be local, project, or user")
+	}
 }
 
 func validEnvName(name string) bool {
@@ -228,15 +245,30 @@ func validHeaderValue(value string) bool {
 	return true
 }
 
-// The extension dispatches slash commands concurrently. Serialize local installs
-// so two commands cannot read the same snapshot and overwrite each other's entry.
-var installConfigMu sync.Mutex
-
-// installServerConfig preserves fields owned by other MCP clients rather than
-// round-tripping the shared file through our narrower Config type.
 func installServerConfig(path, name string, server ServerConfig) error {
-	installConfigMu.Lock()
-	defer installConfigMu.Unlock()
+	encoded, err := json.Marshal(server)
+	if err != nil {
+		return err
+	}
+	return editServerConfig(path, func(servers map[string]json.RawMessage) error {
+		if _, exists := servers[name]; exists {
+			return fmt.Errorf("server %q already exists in %s", name, path)
+		}
+		servers[name] = encoded
+		return nil
+	})
+}
+
+// The extension dispatches slash commands concurrently. Serialize configuration
+// edits so install and uninstall cannot overwrite each other's changes.
+var serverConfigMu sync.Mutex
+
+// editServerConfig preserves fields owned by other MCP clients rather than
+// round-tripping the shared file through our narrower Config type. An update
+// error leaves the original file untouched, including when it does not exist.
+func editServerConfig(path string, update func(map[string]json.RawMessage) error) error {
+	serverConfigMu.Lock()
+	defer serverConfigMu.Unlock()
 
 	root := map[string]json.RawMessage{}
 	data, err := os.ReadFile(path)
@@ -257,14 +289,9 @@ func installServerConfig(path, name string, server ServerConfig) error {
 			servers = map[string]json.RawMessage{}
 		}
 	}
-	if _, exists := servers[name]; exists {
-		return fmt.Errorf("server %q already exists in %s", name, path)
-	}
-	encoded, err := json.Marshal(server)
-	if err != nil {
+	if err := update(servers); err != nil {
 		return err
 	}
-	servers[name] = encoded
 	root["mcpServers"], err = json.Marshal(servers)
 	if err != nil {
 		return err
